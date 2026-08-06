@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+.env
+.env.*
+node_modules
+frontend/node_modules
+.git
+.venv
+*.md
+import_from_ip.py

@@ -1,0 +1,44 @@
+# --- Secrets -------------------------------------------------------------
+# backend/.env holds the live Shopify token, Azure SQL password, SendGrid key
+# and ACS connection string. Never commit it. Use backend/.env.template as the
+# checked-in reference and copy it to backend/.env locally.
+.env
+.env.*
+!.env.template
+local.settings.json
+*.pem
+*.key
+*.pfx
+service_account*.json
+
+# --- Dependencies --------------------------------------------------------
+node_modules/
+.venv/
+venv/
+.scratch_venv/
+
+# --- Python --------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Build output --------------------------------------------------------
+# backend/static/ is the Vite bundle, generated from frontend/src by
+# `cd frontend && npm run build`. It is regenerated on every deploy (see
+# CLAUDE.md), so committing it would produce a large conflicting diff each
+# time. Run the build before `az acr build` — the Dockerfile COPYs it in.
+backend/static/
+dist/
+build/
+
+# --- Editor / OS ---------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- Claude Code ---------------------------------------------------------
+# Machine-local permission allowlist; CLAUDE.md is committed deliberately.
+.claude/settings.local.json
