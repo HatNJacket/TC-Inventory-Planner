@@ -130,6 +130,15 @@ export async function getVendors() {
   return apiFetch('/config/vendors');
 }
 
+// Turn a vendor's PO reminder popup off (active:false) or back on (active:true).
+// The reminder text itself is preserved either way.
+export async function dismissPoReminder(vendor, active = false) {
+  return apiFetch('/vendors/' + encodeURIComponent(vendor) + '/po-reminder/dismiss', {
+    method: 'POST',
+    body: JSON.stringify({ active }),
+  });
+}
+
 // Who am I? Resolves the current token to a user name ("Unknown" = shared token).
 export async function whoami() {
   return apiFetch('/auth/whoami');

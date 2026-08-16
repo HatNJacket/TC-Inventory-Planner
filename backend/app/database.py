@@ -431,6 +431,16 @@ IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('vendor_set
 IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('vendor_settings') AND name = 'pricelist_coo_column')
     ALTER TABLE vendor_settings ADD pricelist_coo_column NVARCHAR(100) NULL;
 
+-- Per-vendor PO reminder: free text shown as a popup when a purchase order is
+-- created for this vendor ("don't forget the X adapters"). po_reminder_active
+-- is the dismiss flag — cleared when the operator picks "Don't show again",
+-- so the text is retained and can be re-enabled without retyping it.
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('vendor_settings') AND name = 'po_reminder')
+    ALTER TABLE vendor_settings ADD po_reminder NVARCHAR(MAX) NULL;
+
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('vendor_settings') AND name = 'po_reminder_active')
+    ALTER TABLE vendor_settings ADD po_reminder_active BIT NOT NULL DEFAULT 1;
+
 -- ─── VENDOR PROMO PRICING (TEMPORARY COST DISCOUNTS FROM VENDORS) ─
 -- Tracks vendor-side promotional pricing windows — costs WE pay during a
 -- vendor's promo. Each row is a SKU with a sale cost effective between

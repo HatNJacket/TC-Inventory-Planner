@@ -1928,6 +1928,10 @@ function InlineVendorRow({ vendor, onSave, onPricelist, onRecompare, onScrapeCon
         website_url: merged.website_url || null,
         pricelist_release_date: merged.pricelist_release_date || null,
         requires_barcode_labels: !!merged.requires_barcode_labels,
+        po_reminder: merged.po_reminder || null,
+        // Typing a reminder re-arms it, so an edited message always shows
+        // again even if it had previously been dismissed.
+        po_reminder_active: merged.po_reminder_active !== false,
       });
       onSave();
     } catch (err) {
@@ -1959,6 +1963,25 @@ function InlineVendorRow({ vendor, onSave, onPricelist, onRecompare, onScrapeCon
         <input type="checkbox" checked={!!local.requires_barcode_labels}
           onChange={e => saveField({ requires_barcode_labels: e.target.checked })}
           style={{ cursor: 'pointer', width: 16, height: 16 }} />
+      </td>
+      <td style={{ padding: '4px 6px' }}
+          title="Shown as a popup whenever a PO is created for this vendor — e.g. 'Don't forget the T-ring adapters'. Leave blank for no reminder.">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input type="text" placeholder="-"
+            value={local.po_reminder || ''}
+            onChange={e => setLocal(l => ({ ...l, po_reminder: e.target.value }))}
+            onBlur={() => saveField({ po_reminder: local.po_reminder })}
+            onKeyDown={e => e.key === 'Enter' && e.target.blur()}
+            style={{ ...cellInput, width: 150 }} />
+          {local.po_reminder && local.po_reminder_active === false && (
+            <span title="Reminder is dismissed — click to re-enable"
+              onClick={() => saveField({ po_reminder_active: true })}
+              style={{ cursor: 'pointer', fontSize: 11, color: 'var(--text-muted)',
+                       border: '1px solid var(--border)', borderRadius: 4, padding: '1px 5px' }}>
+              off
+            </span>
+          )}
+        </div>
       </td>
       <td style={{ padding: '4px 6px', textAlign: 'right' }}>
         <input type="number" step="1" placeholder="-"
@@ -2142,6 +2165,7 @@ export default function VendorManagementPage({ onToast }) {
                   { key: 'invoice_currency', label: 'Currency', align: 'center' },
                   { key: 'enforces_map', label: 'MAP', align: 'center' },
                   { key: 'requires_barcode_labels', label: 'Print Labels', align: 'center' },
+                  { key: 'po_reminder', label: 'PO Reminder', align: 'left' },
                   { key: 'default_markup_pct', label: 'Markup %', align: 'right' },
                   { key: 'lead_time_days', label: 'Lead Time', align: 'right' },
                   { key: 'total_skus', label: 'SKUs', align: 'right' },

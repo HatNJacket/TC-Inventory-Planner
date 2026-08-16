@@ -28,6 +28,14 @@ class Config:
     AZURE_SQL_USER: str = os.getenv("AZURE_SQL_USER", "")
     AZURE_SQL_PASSWORD: str = os.getenv("AZURE_SQL_PASSWORD", "")
 
+    # Shopify location that received stock is added to. Must match the
+    # location name in Shopify exactly (case-insensitive). Event locations
+    # such as "Starfest" are deliberately NOT the default — stock is received
+    # into the warehouse and only moves to an event location manually.
+    RECEIVING_LOCATION_NAME: str = os.getenv(
+        "SHOPIFY_RECEIVING_LOCATION", "Telescopes Canada Warehouse"
+    )
+
     # App settings
     AUTH_TOKEN: str = os.getenv("TC_PLANNER_AUTH_TOKEN", "tc-planner-dev-token")
     # Per-user tokens so actions (e.g. receiving stock) can be attributed to a

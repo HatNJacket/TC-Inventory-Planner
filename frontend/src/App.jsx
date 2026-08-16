@@ -237,6 +237,38 @@ function ReplenishmentPage({ onToast, onNavigate }) {
   const [addToPoId, setAddToPoId] = useState('');
   const [addingToPo, setAddingToPo] = useState(false);
   const [creatingOrder, setCreatingOrder] = useState(false);
+  // Per-vendor PO reminder popup. `poReminder` holds the pending prompt while
+  // we wait for the operator to choose; resolve() continues or aborts the
+  // PO creation that triggered it.
+  const [poReminder, setPoReminder] = useState(null);
+
+  // Show the vendor's reminder (if any) and wait for a decision.
+  // Returns true to proceed with the PO, false to cancel.
+  const confirmVendorReminder = (vendorName) => {
+    const v = vendors.find(x => x.name === vendorName);
+    const text = (v?.po_reminder || '').trim();
+    if (!text || v?.po_reminder_active === false) return Promise.resolve(true);
+    return new Promise(resolve => {
+      setPoReminder({ vendor: vendorName, text, resolve });
+    });
+  };
+
+  const closePoReminder = async (action) => {
+    const r = poReminder;
+    setPoReminder(null);
+    if (!r) return;
+    if (action === 'dismiss') {
+      try {
+        await api.dismissPoReminder(r.vendor, false);
+        // Reflect immediately so it doesn't reappear before the next refresh.
+        setVendors(vs => vs.map(v => v.name === r.vendor ? { ...v, po_reminder_active: false } : v));
+        onToast(`Reminder for ${r.vendor} won't show again`);
+      } catch (e) {
+        onToast('Could not save that preference: ' + e.message, 'error');
+      }
+    }
+    r.resolve(action !== 'cancel');
+  };
   const searchTimeout = useRef(null);
 
   // Fetch vendors on mount
@@ -444,6 +476,10 @@ function ReplenishmentPage({ onToast, onNavigate }) {
     const vendorSet = new Set(selectedItems.map(i => i.vendor));
     const orderVendor = vendorSet.size === 1 ? [...vendorSet][0] : (vendorFilter || 'Mixed');
 
+    // Vendor-specific reminder ("don't forget the T-rings"). Shown before the
+    // PO is created so there's still a chance to add the forgotten items.
+    if (!await confirmVendorReminder(orderVendor)) return;
+
     try {
       const leadTime = vendors.find(v => v.name === orderVendor)?.lead_time_days || 14;
       const expectedDate = new Date(Date.now() + leadTime * 86400000).toISOString().split('T')[0];
@@ -518,6 +554,9 @@ function ReplenishmentPage({ onToast, onNavigate }) {
       );
       if (!ok) return;
     }
+
+    // Same vendor reminder applies when topping up an existing PO.
+    if (!await confirmVendorReminder(targetPo.vendor)) return;
 
     setAddingToPo(true);
     let added = 0;
@@ -1139,6 +1178,70 @@ function ReplenishmentPage({ onToast, onNavigate }) {
           </button>
         </div>
       </div>
+
+      {/* Vendor PO reminder — shown before a PO is created/topped up so the
+          forgotten items can still be added. */}
+      {poReminder && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: 'var(--white)', borderRadius: 10, width: 460, maxWidth: '90vw',
+            boxShadow: '0 12px 40px rgba(0,0,0,0.3)', overflow: 'hidden',
+          }}>
+            <div style={{
+              padding: '14px 20px', backgroundColor: '#fef3c7', borderBottom: '1px solid #fde68a',
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              <span style={{ fontSize: 20 }}>📌</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>Reminder for {poReminder.vendor}</div>
+                <div style={{ fontSize: 12, color: '#92400e' }}>Before you create this purchase order</div>
+              </div>
+            </div>
+
+            <div style={{
+              padding: '20px', fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap',
+            }}>
+              {poReminder.text}
+            </div>
+
+            <div style={{
+              padding: '12px 20px', borderTop: '1px solid var(--border)',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+            }}>
+              <button
+                onClick={() => closePoReminder('cancel')}
+                style={{
+                  padding: '8px 14px', borderRadius: 6, border: '1px solid var(--border)',
+                  backgroundColor: 'transparent', fontSize: 13, cursor: 'pointer',
+                }}>
+                Cancel
+              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => closePoReminder('dismiss')}
+                  title="Stop showing this reminder. The text is kept and can be re-enabled on the Vendors page."
+                  style={{
+                    padding: '8px 14px', borderRadius: 6, border: '1px solid var(--border)',
+                    backgroundColor: 'transparent', fontSize: 13, cursor: 'pointer',
+                  }}>
+                  Don't show again
+                </button>
+                <button
+                  onClick={() => closePoReminder('keep')}
+                  style={{
+                    padding: '8px 18px', borderRadius: 6, border: 'none', fontWeight: 600,
+                    backgroundColor: 'var(--green)', color: '#fff', fontSize: 13, cursor: 'pointer',
+                  }}>
+                  Got it — remind me next time
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

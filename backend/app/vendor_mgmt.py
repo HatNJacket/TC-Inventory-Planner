@@ -160,6 +160,7 @@ def get_all_vendor_settings(db) -> List[Dict]:
                 vs.pricelist_sku_secondary_column, vs.pricelist_sku_separator,
                 vs.pricelist_barcode_column, vs.pricelist_map_cad_column,
                 vs.pricelist_coo_column,
+                vs.po_reminder, vs.po_reminder_active,
                 vs.updated_at,
                 -- Inventory summary from velocity cache
                 (SELECT COUNT(*) FROM product_velocity_cache pvc WHERE pvc.vendor = vs.vendor) AS total_skus,
@@ -199,6 +200,8 @@ def get_all_vendor_settings(db) -> List[Dict]:
                 'pricelist_barcode_column': d.get('pricelist_barcode_column'),
                 'pricelist_map_cad_column': d.get('pricelist_map_cad_column'),
                 'pricelist_coo_column': d.get('pricelist_coo_column'),
+                'po_reminder': d.get('po_reminder'),
+                'po_reminder_active': bool(d.get('po_reminder_active')) if d.get('po_reminder_active') is not None else True,
                 'updated_at': d['updated_at'].isoformat() if d['updated_at'] else None,
                 'total_skus': d['total_skus'] or 0,
                 'inventory_value': round(_f(d['inventory_value']), 2),
@@ -225,6 +228,8 @@ def get_all_vendor_settings(db) -> List[Dict]:
                 'pricelist_uploaded_at': None,
                 'pricelist_release_date': None,
                 'requires_barcode_labels': False,
+                'po_reminder': None,
+                'po_reminder_active': True,
                 'updated_at': None,
                 'total_skus': 0,
                 'inventory_value': 0,
@@ -252,12 +257,14 @@ def upsert_vendor_settings(db, data: Dict) -> Dict:
                 invoice_currency = ?, enforces_map = ?, default_markup_pct = ?,
                 website_url = ?, pricelist_release_date = ?,
                 requires_barcode_labels = ?,
+                po_reminder = ?, po_reminder_active = ?,
                 updated_at = GETUTCDATE()
             WHEN NOT MATCHED THEN INSERT
                 (vendor, lead_time_days, min_order_value, notes,
                  invoice_currency, enforces_map, default_markup_pct, website_url,
-                 pricelist_release_date, requires_barcode_labels)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                 pricelist_release_date, requires_barcode_labels,
+                 po_reminder, po_reminder_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """,
             data['vendor'],
             data.get('lead_time_days', 14),
@@ -269,6 +276,10 @@ def upsert_vendor_settings(db, data: Dict) -> Dict:
             data.get('website_url'),
             data.get('pricelist_release_date'),
             1 if data.get('requires_barcode_labels') else 0,
+            (data.get('po_reminder') or None),
+            # Editing the reminder text re-arms it, so a newly-typed reminder
+            # always shows even if the previous one had been dismissed.
+            1 if data.get('po_reminder_active', True) else 0,
             # INSERT values
             data['vendor'],
             data.get('lead_time_days', 14),
@@ -280,6 +291,8 @@ def upsert_vendor_settings(db, data: Dict) -> Dict:
             data.get('website_url'),
             data.get('pricelist_release_date'),
             1 if data.get('requires_barcode_labels') else 0,
+            (data.get('po_reminder') or None),
+            1 if data.get('po_reminder_active', True) else 0,
         )
         conn.commit()
         return {'status': 'ok', 'vendor': data['vendor']}

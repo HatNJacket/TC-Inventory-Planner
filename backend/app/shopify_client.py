@@ -562,27 +562,89 @@ class ShopifyClient:
 
     # ─── INVENTORY MANAGEMENT ────────────────────────────────────
 
-    async def get_primary_location_id(self) -> str:
-        """Get the primary (first) location ID for inventory adjustments."""
+    async def get_receiving_location_id(self) -> str:
+        """Location that received stock is added to.
+
+        This used to be ``locations(first: 1)`` — whatever Shopify happened to
+        return first. When the "Starfest" event location was created it sorted
+        ahead of the warehouse, so every receive silently added stock to
+        Starfest instead. Now the location is resolved explicitly:
+
+          1. exact name match on ``config.RECEIVING_LOCATION_NAME``
+             (default "Telescopes Canada Warehouse"), else
+          2. the active location that ships inventory / fulfils online orders
+             — event locations like Starfest have both flags off, else
+          3. the first active location, with a loud warning.
+
+        Resolved once per process and cached; location IDs don't change.
+        """
+        if getattr(self, "_receiving_location_id", None):
+            return self._receiving_location_id
+
         query = """
         query {
-            locations(first: 1) {
+            locations(first: 50) {
                 edges {
                     node {
                         id
                         name
+                        isActive
+                        shipsInventory
+                        fulfillsOnlineOrders
                     }
                 }
             }
         }
         """
         data = await self._query(query)
-        edges = data["locations"]["edges"]
-        if not edges:
+        nodes = [e["node"] for e in (data.get("locations") or {}).get("edges", [])]
+        if not nodes:
             raise Exception("No locations found in Shopify")
-        loc = edges[0]["node"]
-        logger.info(f"Primary location: {loc['name']} ({loc['id']})")
-        return loc["id"]
+
+        wanted = (config.RECEIVING_LOCATION_NAME or "").strip().lower()
+        chosen = None
+
+        if wanted:
+            chosen = next(
+                (n for n in nodes if (n.get("name") or "").strip().lower() == wanted),
+                None,
+            )
+            if chosen:
+                logger.info(
+                    "Receiving location: %s (%s) — matched configured name",
+                    chosen["name"], chosen["id"],
+                )
+
+        if not chosen:
+            chosen = next(
+                (n for n in nodes
+                 if n.get("isActive") and (n.get("shipsInventory") or n.get("fulfillsOnlineOrders"))),
+                None,
+            )
+            if chosen:
+                logger.warning(
+                    "Receiving location '%s' not found; falling back to '%s' (%s) "
+                    "because it ships inventory. Set SHOPIFY_RECEIVING_LOCATION to "
+                    "silence this.",
+                    config.RECEIVING_LOCATION_NAME, chosen["name"], chosen["id"],
+                )
+
+        if not chosen:
+            chosen = next((n for n in nodes if n.get("isActive")), nodes[0])
+            logger.error(
+                "Could not identify a shipping location — defaulting to '%s' (%s). "
+                "Received stock may land in the wrong place; check "
+                "SHOPIFY_RECEIVING_LOCATION.",
+                chosen["name"], chosen["id"],
+            )
+
+        self._receiving_location_id = chosen["id"]
+        return self._receiving_location_id
+
+    # Backwards-compatible alias — the old name implied "whichever is first",
+    # which is exactly the bug. Kept so any stray caller still works.
+    async def get_primary_location_id(self) -> str:
+        return await self.get_receiving_location_id()
 
     async def lookup_inventory_by_skus(
         self, skus: List[str]

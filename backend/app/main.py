@@ -568,6 +568,43 @@ async def get_replenishment_summary(token: str = Depends(verify_token)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class PoReminderDismiss(BaseModel):
+    active: bool = False   # False = stop showing; True = re-arm the reminder
+
+
+@app.post("/api/vendors/{vendor}/po-reminder/dismiss")
+async def dismiss_po_reminder(
+    vendor: str, data: PoReminderDismiss, token: str = Depends(verify_token)
+):
+    """Turn a vendor's PO reminder popup off (or back on).
+
+    Only flips the flag — the reminder text is kept so it can be re-enabled
+    later without retyping. Called by the "Don't show again" button on the
+    popup shown at PO creation.
+    """
+    try:
+        conn = db._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE vendor_settings SET po_reminder_active = ?, updated_at = GETUTCDATE() "
+                "WHERE vendor = ?",
+                1 if data.active else 0, vendor,
+            )
+            updated = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Vendor '{vendor}' not found")
+        return {"status": "ok", "vendor": vendor, "po_reminder_active": data.active}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating PO reminder for {vendor}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class ReplenishableToggle(BaseModel):
     skus: List[str]
     replenishable: bool  # True = make replenishable, False = mark non-replenishable
@@ -1261,8 +1298,9 @@ async def prepare_stock_update(
             if info:
                 inventory_data[po_sku] = info
 
-        # Get location ID
-        location_id = await shopify_client.get_primary_location_id()
+        # Location that receipts are booked into (the warehouse — never an
+        # event location like Starfest).
+        location_id = await shopify_client.get_receiving_location_id()
 
         # Build preview
         preview_items = []
@@ -3227,6 +3265,10 @@ class VendorSettingsUpdate(BaseModel):
     website_url: Optional[str] = None
     pricelist_release_date: Optional[str] = None  # YYYY-MM-DD
     requires_barcode_labels: bool = False
+    # Reminder popped up when a PO is created for this vendor. Editing the
+    # text re-arms it (po_reminder_active defaults True).
+    po_reminder: Optional[str] = None
+    po_reminder_active: bool = True
 
 
 @app.post("/api/vendors")
