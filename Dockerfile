@@ -2,7 +2,9 @@
 # install is needed and the image can never ship a stale bundle (the old
 # flow copied a locally-built backend/static and silently shipped
 # whatever was lying there).
-FROM mcr.microsoft.com/mirror/docker/library/node:20-slim AS frontend
+# (The MCR mirror doesn't carry node tags - manifest unknown - so this
+# one comes straight from Docker Hub.)
+FROM docker.io/library/node:20-slim AS frontend
 WORKDIR /fe
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
