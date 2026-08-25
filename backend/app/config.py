@@ -48,6 +48,14 @@ class Config:
     SAFETY_STOCK_DAYS: int = int(os.getenv("SAFETY_STOCK_DAYS", "7"))
     SALES_HISTORY_MONTHS: int = int(os.getenv("SALES_HISTORY_MONTHS", "12"))
 
+    # RFID Stickers app (telcan-rfid): the Stock Orders "Print labels"
+    # button sends received items there to queue RFID label prints.
+    # The bridge is OFF until RFID_STATION_KEY is set.
+    RFID_APP_URL: str = os.getenv(
+        "RFID_APP_URL", "https://telcan-rfid.azurewebsites.net"
+    )
+    RFID_STATION_KEY: str = os.getenv("RFID_STATION_KEY", "")
+
     # Email (Azure Communication Services)
     ACS_CONNECTION_STRING: str = os.getenv("ACS_CONNECTION_STRING", "")
     PO_EMAIL_FROM: str = os.getenv("PO_EMAIL_FROM", "support@telescopescanada.ca")  # Azure-managed sender e.g. DoNotReply@<guid>.azurecomm.net

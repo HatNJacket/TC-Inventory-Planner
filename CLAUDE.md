@@ -6,13 +6,18 @@ TC-Planner is a containerized FastAPI app on Azure App Service. The frontend
 bundle is served by the FastAPI backend out of `backend/static/`, so any
 frontend change must be **rebuilt** before the image is rebuilt.
 
-The full deploy sequence (run from project root):
+The full deploy sequence (run from project root). Since 2026-08-25 the
+Dockerfile is multi-stage and builds the frontend INSIDE `az acr build`
+(a Node stage runs `npm ci && vite build`), so no local Node install is
+needed and a stale local bundle can never ship:
 
 ```powershell
-cd C:\tc-planner\frontend; npm run build; cd ..
 az acr build --registry tcplanneracr --image tc-planner:latest --no-logs .
 az webapp restart --name tc-planner-app --resource-group shopify-automation-rg
 ```
+
+(`npm run build` locally is now only for Vite dev workflows; the deploy
+ignores backend/static entirely.)
 
 > **Why `--no-logs`?** On Windows, the Azure CLI's log streamer crashes
 > with `UnicodeEncodeError: 'charmap' codec` when the build output

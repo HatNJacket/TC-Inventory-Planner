@@ -1238,6 +1238,92 @@ async def receive_items(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/stock-orders/{order_id}/rfid-labels")
+async def send_rfid_labels(
+    order_id: int, request: ReceiveRequest,
+    token: str = Depends(verify_token),
+    user: str = Depends(current_user),
+):
+    """Send just-received items to the RFID Stickers app's print queue.
+
+    Server-to-server (the station key never reaches the browser). The
+    RFID app creates/reuses a receiving batch named after this stock
+    order, queues one RFID label per received unit (each printed with
+    the product's home bin), and the warehouse pairs tags over there.
+    Nothing here writes stock - "Increase stock in Shopify" stays the
+    separate, explicit step it already is.
+    """
+    if not config.RFID_STATION_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="RFID label bridge is not configured (set "
+                   "RFID_STATION_KEY / RFID_APP_URL).",
+        )
+    order = db.get_stock_order(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Stock order not found")
+    by_id = {it.get("id"): it for it in (order.get("items") or [])}
+    rfid_items = []
+    missing_sku = []
+    for entry in request.items:
+        it = by_id.get(entry.item_id)
+        if not it or (entry.received_qty or 0) <= 0:
+            continue
+        if not it.get("sku"):
+            missing_sku.append(str(entry.item_id))
+            continue
+        rfid_items.append({
+            "sku": it["sku"],
+            "quantity": int(entry.received_qty),
+            "barcode": it.get("barcode") or None,
+        })
+    if not rfid_items:
+        raise HTTPException(
+            status_code=422,
+            detail="Nothing printable in that receive (missing SKUs or "
+                   "zero quantities).",
+        )
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{config.RFID_APP_URL.rstrip('/')}/api/receiving/prints",
+                json={
+                    "items": rfid_items,
+                    "requested_by": user,
+                    # The RFID side caps reference at 60 chars.
+                    "reference": (
+                        f"SO {order_id}"
+                        + (f" · {order.get('vendor')}"
+                           if order.get("vendor") else "")
+                    )[:60],
+                },
+                headers={"X-Station-Key": config.RFID_STATION_KEY},
+            )
+        if resp.status_code >= 400:
+            detail = resp.text[:300]
+            try:
+                detail = resp.json().get("detail", detail)
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=502,
+                detail=f"RFID app refused the print request: {detail}",
+            )
+        result = resp.json()
+        if missing_sku:
+            result["skipped_no_sku"] = missing_sku
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"RFID label bridge error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach the RFID app: {e}",
+        )
+
+
 class PrepareStockItems(BaseModel):
     """Specific items to include in the stock update preview."""
     items: List[ReceiveItem] = []  # item_id + received_qty (the amounts just saved)

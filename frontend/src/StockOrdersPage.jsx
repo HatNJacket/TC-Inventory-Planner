@@ -239,6 +239,40 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
     setSaving(false);
   };
 
+  // RFID labels - sends the just-saved receive to the RFID Stickers
+  // app's print queue (server-to-server; the labels come out on the
+  // warehouse Zebra with RFID encoding, one per received unit, each
+  // printed with the product's home bin). Separate from the barcode
+  // label agent above and from the Shopify stock update.
+  const [printingRfid, setPrintingRfid] = useState(false);
+  const handlePrintRfidLabels = async () => {
+    if (!lastReceived || !lastReceived.length) return;
+    setPrintingRfid(true);
+    try {
+      const res = await api.sendRfidLabels(orderId, lastReceived);
+      onToast(res.message || `${res.queued} RFID label(s) queued`);
+      const problems = [
+        ...(res.skipped_unknown || []),
+        ...(res.skipped_no_sku || []),
+      ];
+      if (problems.length) {
+        onToast(
+          `Not printed (unknown to the RFID system): ${problems.slice(0, 3).join(', ')}${problems.length > 3 ? '...' : ''}`,
+          'error',
+        );
+      }
+      if ((res.skipped_no_bin || []).length) {
+        onToast(
+          `Held for a bin (assign one in the RFID app, then print again): ${res.skipped_no_bin.slice(0, 3).join(', ')}${res.skipped_no_bin.length > 3 ? '...' : ''}`,
+          'error',
+        );
+      }
+    } catch (err) {
+      onToast('RFID labels failed: ' + err.message, 'error');
+    }
+    setPrintingRfid(false);
+  };
+
   // Stock update - passes the specific items that were just saved
   const handleIncreaseStock = async () => {
     setReviewLoading(true);
@@ -798,6 +832,16 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
         {!editMode && !hasPendingReceives && (<>
           <button onClick={onBack} style={{ padding: '10px 24px', borderRadius: 6, border: '1px solid var(--border)', backgroundColor: 'transparent', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>Back to stock orders</button>
           {lastReceived && lastReceived.length > 0 && <button onClick={handleIncreaseStock} disabled={reviewLoading} style={{ padding: '10px 24px', borderRadius: 6, border: 'none', backgroundColor: 'var(--green)', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>{reviewLoading ? 'Loading...' : 'Increase stock in Shopify'}</button>}
+          {lastReceived && lastReceived.length > 0 && (
+            <button
+              onClick={handlePrintRfidLabels}
+              disabled={printingRfid}
+              title="Queue one RFID label per received unit on the warehouse Zebra (via the RFID Stickers app). Each label prints the product's home bin; pair the tags in the RFID app's Batch tagging."
+              style={{ marginLeft: 'auto', padding: '10px 24px', borderRadius: 6, border: 'none', backgroundColor: '#2980b9', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}
+            >
+              {printingRfid ? 'Queueing...' : 'Print labels'}
+            </button>
+          )}
         </>)}
       </div>
       {showStockModal && <StockUpdateModal reviewData={reviewData} onApply={handleApplyStockUpdate} onCancel={() => { setShowStockModal(false); setReviewData(null); }} applying={applying} />}
