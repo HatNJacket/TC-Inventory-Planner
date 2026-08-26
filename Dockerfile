@@ -1,3 +1,18 @@
+# Stage 1: frontend build. Runs inside `az acr build`, so no local Node
+# install is needed and the image can never ship a stale bundle (the old
+# flow copied a locally-built backend/static and silently shipped
+# whatever was lying there).
+# (The MCR mirror doesn't carry node tags - manifest unknown - so this
+# one comes straight from Docker Hub.)
+FROM docker.io/library/node:20-slim AS frontend
+WORKDIR /fe
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+# vite.config.js points outDir at ../backend/static for local dev;
+# override to a fixed path inside this stage.
+RUN npm run build -- --outDir /fe/dist --emptyOutDir
+
 FROM mcr.microsoft.com/mirror/docker/library/python:3.11-slim
 
 # Install ODBC driver for Azure SQL
@@ -17,7 +32,7 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/app/ ./app/
-COPY backend/static/ ./static/
+COPY --from=frontend /fe/dist/ ./static/
 
 # Serve frontend from FastAPI static files
 ENV PORT=8000

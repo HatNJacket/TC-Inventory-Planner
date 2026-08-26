@@ -193,6 +193,16 @@ export async function receiveStockOrderItems(orderId, items) {
   });
 }
 
+// Send just-received items to the RFID Stickers app's print queue.
+// Same {item_id, received_qty} shape as receive; the backend resolves
+// SKUs and talks to the RFID app server-to-server.
+export async function sendRfidLabels(orderId, items) {
+  return apiFetch(`/stock-orders/${orderId}/rfid-labels`, {
+    method: 'POST',
+    body: JSON.stringify({ items }),
+  });
+}
+
 export async function prepareStockUpdate(orderId, items = null) {
   return apiFetch(`/stock-orders/${orderId}/prepare-stock-update`, {
     method: 'POST',
