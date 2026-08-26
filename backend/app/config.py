@@ -43,6 +43,20 @@ class Config:
     # The shared AUTH_TOKEN above keeps working (attributed to "Unknown"), so
     # existing sessions/integrations don't break when user tokens are added.
     USER_TOKENS_RAW: str = os.getenv("TC_PLANNER_USER_TOKENS", "")
+
+    # Co-purchase ("frequently bought together") recompute lives in the
+    # func-freshdesk-bot function app. The key is held here so it never
+    # reaches the browser; the UI calls TC-Planner, which proxies onward.
+    COPURCHASE_FUNCTION_URL: str = os.getenv(
+        "COPURCHASE_FUNCTION_URL", "https://func-freshdesk-bot.azurewebsites.net")
+    COPURCHASE_FUNCTION_KEY: str = os.getenv("COPURCHASE_FUNCTION_KEY", "")
+
+    # Shopify tags that take a product out of replenishment entirely.
+    # One-off stock (open box, clearance, used units) is never reordered, so
+    # suggesting a purchase quantity for it is always noise. Comma-separated,
+    # matched case-insensitively against whole tags.
+    EXCLUDED_REPLENISH_TAGS_RAW: str = os.getenv(
+        "EXCLUDED_REPLENISH_TAGS", "Open Box,Clearance,Used")
     DEFAULT_LEAD_TIME_DAYS: int = int(os.getenv("DEFAULT_LEAD_TIME_DAYS", "14"))
     PLANNING_HORIZON_DAYS: int = int(os.getenv("PLANNING_HORIZON_DAYS", "30"))
     SAFETY_STOCK_DAYS: int = int(os.getenv("SAFETY_STOCK_DAYS", "7"))
@@ -104,6 +118,13 @@ class Config:
         11: 1.457,  # November - Black Friday / holiday peak
         12: 1.381,  # December - holiday peak continues
     })
+
+    @property
+    def excluded_replenish_tags(self) -> list:
+        """Lower-cased tags that exclude a product from replenishment."""
+        return [t.strip().lower()
+                for t in (self.EXCLUDED_REPLENISH_TAGS_RAW or "").split(",")
+                if t.strip()]
 
     @property
     def user_tokens(self) -> dict:

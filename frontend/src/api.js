@@ -511,6 +511,14 @@ export async function upsertVendor(data) {
   return apiFetch('/vendors', { method: 'POST', body: JSON.stringify(data) });
 }
 
+// Record a physical stock count. With no body the server stamps today's
+// date and the caller's own name from their token.
+export async function recordStockCheck(vendor, data = {}) {
+  return apiFetch(`/vendors/${encodeURIComponent(vendor)}/stock-check`, {
+    method: 'POST', body: JSON.stringify(data),
+  });
+}
+
 export async function fetchFxRate(pair = 'USDCAD') {
   return apiFetch(`/fx-rate?pair=${pair}`);
 }
@@ -1221,4 +1229,24 @@ export async function llmParseInvoice(file, model) {
     throw new Error(error.detail || 'HTTP ' + response.status);
   }
   return response.json();
+}
+
+// ── Related products (co-purchase) ────────────────────────────────
+// The recompute runs in a separate function app and takes minutes; this
+// call only starts it. Poll getCopurchaseStatus() for the outcome.
+export async function recomputeCopurchase(months = 12) {
+  return apiFetch('/copurchase/recompute?months=' + months, { method: 'POST' });
+}
+
+export async function getCopurchaseStatus() {
+  return apiFetch('/copurchase/status');
+}
+
+// Reverse a receive on one PO line. Units already pushed to Shopify are
+// removed from Shopify as well; the response says how many.
+export async function undoReceive(orderId, itemId, qty = null) {
+  return apiFetch(`/stock-orders/${orderId}/items/${itemId}/undo-receive`, {
+    method: 'POST',
+    body: JSON.stringify(qty ? { qty } : {}),
+  });
 }

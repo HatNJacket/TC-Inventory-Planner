@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -1238,6 +1239,121 @@ async def receive_items(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+class UndoReceiveRequest(BaseModel):
+    """qty omitted means undo everything received on that line."""
+    qty: Optional[int] = None
+
+
+@app.post("/api/stock-orders/{order_id}/items/{item_id}/undo-receive")
+async def undo_receive_item(
+    order_id: int, item_id: int,
+    request: UndoReceiveRequest = UndoReceiveRequest(),
+    token: str = Depends(verify_token),
+    user: str = Depends(current_user),
+):
+    """Reverse a receive on a single PO line.
+
+    Units already pushed to Shopify are taken back out of Shopify too —
+    undoing only the database would leave stock overstated by exactly the
+    amount undone, which is the same class of silent drift that left PO 936
+    short in the first place.
+    """
+    try:
+        order = db.get_stock_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Stock order not found")
+        line = next((i for i in order.get("items", []) if i.get("id") == item_id), None)
+        if not line:
+            raise HTTPException(status_code=404, detail="Line item not found on this order")
+
+        received = int(line.get("received_qty") or 0)
+        if received <= 0:
+            raise HTTPException(status_code=400, detail="Nothing received on this line")
+
+        qty = request.qty if request.qty is not None else received
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail="Quantity must be positive")
+        if qty > received:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot undo {qty}; only {received} received on this line")
+
+        result = db.undo_receive(order_id, item_id, qty, undone_by=user)
+        undone = result.get("undone", 0)
+        pushed_undone = result.get("pushed_undone", 0)
+        sku = result.get("sku") or line.get("sku")
+
+        # Take the already-pushed units back out of Shopify.
+        shopify_note = None
+        if pushed_undone > 0:
+            try:
+                canonical = db.resolve_skus_via_cache([sku]).get(sku, sku)
+                inv = await shopify_client.lookup_inventory_by_skus([canonical])
+                info = inv.get(canonical) or inv.get(sku)
+                inv_item_id = (info or {}).get("inventory_item_id")
+                if not inv_item_id:
+                    shopify_note = (
+                        f"Could not find {sku} in Shopify — its stock is now "
+                        f"{pushed_undone} too high and needs a manual correction.")
+                    logger.error("Undo receive: %s", shopify_note)
+                else:
+                    location_id = await shopify_client.get_receiving_location_id()
+                    res = await shopify_client.adjust_inventory(
+                        [{"inventory_item_id": inv_item_id,
+                          "delta": -pushed_undone, "sku": sku}],
+                        location_id, reason="correction",
+                    )
+                    ok = res and res[0].get("success")
+                    if not ok:
+                        shopify_note = (
+                            f"Shopify adjustment failed ({(res[0] or {}).get('error') if res else 'no response'})"
+                            f" — stock for {sku} is {pushed_undone} too high.")
+                        logger.error("Undo receive: %s", shopify_note)
+                    else:
+                        qty_after = res[0].get("quantity_after")
+                        if qty_after is None:
+                            fresh = await shopify_client.lookup_inventory_by_skus([canonical])
+                            qty_after = (fresh.get(canonical) or {}).get("available")
+                        if qty_after is not None:
+                            conn = db._get_connection()
+                            try:
+                                cur = conn.cursor()
+                                cur.execute(
+                                    "UPDATE product_velocity_cache SET current_stock = ?, "
+                                    "cached_at = GETUTCDATE() WHERE UPPER(sku) = UPPER(?)",
+                                    int(qty_after), canonical,
+                                )
+                                conn.commit()
+                            finally:
+                                conn.close()
+            except Exception as e:
+                shopify_note = (
+                    f"Shopify adjustment failed ({e}) — stock for {sku} is "
+                    f"{pushed_undone} too high.")
+                logger.error("Undo receive Shopify error: %s", e, exc_info=True)
+
+        # Receiving lowers on_order; undoing it puts that back.
+        try:
+            if sku:
+                db.recalc_on_order_for_skus([sku])
+        except Exception as e:
+            logger.warning(f"Could not recalc on_order after undo: {e}")
+
+        return {
+            "status": "ok",
+            "sku": sku,
+            "undone": undone,
+            "shopify_adjusted": pushed_undone if not shopify_note else 0,
+            "warning": shopify_note,
+            "order": db.get_stock_order(order_id),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Undo receive error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 class PrepareStockItems(BaseModel):
     """Specific items to include in the stock update preview."""
     items: List[ReceiveItem] = []  # item_id + received_qty (the amounts just saved)
@@ -1270,11 +1386,13 @@ async def prepare_stock_update(
                 if i["id"] in specific_ids:
                     target_items.append({**i, "_adjustment": specific_ids[i["id"]]})
         else:
-            # Fallback: all items with remaining qty
+            # No batch supplied — offer everything received but never pushed to
+            # Shopify. This is the recovery path when the browser lost the
+            # in-memory batch (refresh, navigation, or starting the next one).
+            outstanding = {r["item_id"]: r["qty"] for r in db.get_unpushed_receipts(order_id)}
             target_items = [
-                {**i, "_adjustment": i.get("ordered_qty", 0) - i.get("received_qty", 0)}
-                for i in items
-                if (i.get("ordered_qty", 0) - i.get("received_qty", 0)) > 0
+                {**i, "_adjustment": outstanding[i["id"]]}
+                for i in items if i["id"] in outstanding and outstanding[i["id"]] > 0
             ]
 
         if not target_items:
@@ -1340,7 +1458,7 @@ class StockUpdateItem(BaseModel):
     item_id: int
     sku: str
     adjustment: int
-    inventory_item_id: str
+    inventory_item_id: Optional[str] = None
 
 
 class ApplyStockUpdateRequest(BaseModel):
@@ -1359,24 +1477,46 @@ async def apply_stock_update(
     """
     try:
         # 1. Push adjustments to Shopify
-        adjustments = [
-            {
+        adjustments = []
+        unresolved = []
+        for item in request.items:
+            if item.adjustment <= 0:
+                continue
+            if not item.inventory_item_id:
+                # Previously skipped in silence, so the receive looked applied
+                # when nothing had been sent. Report it instead.
+                unresolved.append(item.sku)
+                continue
+            adjustments.append({
                 "inventory_item_id": item.inventory_item_id,
                 "delta": item.adjustment,
                 "sku": item.sku,
-            }
-            for item in request.items
-            if item.inventory_item_id and item.adjustment > 0
-        ]
+            })
 
         shopify_results = []
         if adjustments:
             shopify_results = await shopify_client.adjust_inventory(
                 adjustments, request.location_id, reason="received"
             )
+        for sku in unresolved:
+            shopify_results.append({
+                "sku": sku, "success": False,
+                "error": "No Shopify inventory item found for this SKU",
+            })
 
-        # Note: receives were already recorded in the database by the Save step.
-        # This endpoint only pushes the adjustment to Shopify.
+        # Receives were recorded by the Save step; mark the ones that have now
+        # genuinely reached Shopify so anything left over stays visible as
+        # outstanding instead of being silently forgotten.
+        pushed_by_sku = {
+            r["sku"]: r for r in shopify_results if r.get("success") and r.get("sku")
+        }
+        for item in request.items:
+            if item.sku in pushed_by_sku and item.adjustment > 0:
+                try:
+                    db.mark_receipts_pushed(order_id, item.item_id, item.adjustment)
+                except Exception as e:
+                    logger.warning(
+                        "Could not mark receipts pushed for %s: %s", item.sku, e)
 
         # Write the post-adjustment Shopify quantity back into the velocity
         # cache so the 'More on the Way' backorder rule (current_stock +
@@ -1389,6 +1529,26 @@ async def apply_stock_update(
                 for r in shopify_results
                 if r.get("success") and r.get("sku") and r.get("quantity_after") is not None
             ]
+            # Shopify returns an empty `changes` array for "available"
+            # adjustments, so quantity_after is usually absent and the cache
+            # was never actually refreshed here. Re-read the adjusted SKUs so
+            # the backorder rule (current_stock + on_order) sees the receive
+            # straight away instead of acting on pre-receive negatives.
+            covered = {sku for sku, _ in stock_updates}
+            missing = [
+                r["sku"] for r in shopify_results
+                if r.get("success") and r.get("sku") and r["sku"] not in covered
+            ]
+            if missing:
+                try:
+                    fresh = await shopify_client.lookup_inventory_by_skus(missing)
+                    for sku, info in fresh.items():
+                        qty = info.get("available")
+                        if qty is not None:
+                            stock_updates.append((sku, int(qty)))
+                except Exception as e:
+                    logger.warning(f"Could not re-read stock after receive: {e}")
+
             if stock_updates:
                 conn = db._get_connection()
                 try:
@@ -1726,6 +1886,77 @@ async def get_overview(token: str = Depends(verify_token)):
 
 # ─── BACKORDERS ──────────────────────────────────────────────────
 
+# ─── BACKORDER SOURCE ORDERS ─────────────────────────────────────────────
+# The backorder list comes from negative stock in the velocity cache, which
+# says nothing about *which* customer orders caused it. Negative available
+# stock means committed exceeds on-hand, and the committed side is the
+# unfulfilled line items — so the orders behind a backorder are the open
+# unfulfilled ones containing that SKU.
+#
+# One paginated sweep covers every backordered SKU at once (about 100 orders
+# / 2 pages / ~1.5s for this store), which is far cheaper than a per-SKU
+# query and keeps the list a single request.
+
+SHOPIFY_ADMIN_ORDER_URL = "https://admin.shopify.com/store/{store}/orders/{order_id}"
+
+
+async def _unfulfilled_orders_by_sku() -> dict:
+    """{normalized_sku: [ {name, order_number, created_at, qty, admin_url} ]}"""
+    from .shopify_client import normalize_sku
+
+    query = """
+    query($after: String) {
+      orders(first: 100, after: $after,
+             query: "fulfillment_status:unfulfilled AND status:open") {
+        pageInfo { hasNextPage endCursor }
+        edges { node {
+          id name createdAt
+          lineItems(first: 50) {
+            edges { node { sku quantity unfulfilledQuantity } }
+          }
+        } }
+      }
+    }
+    """
+    store_handle = (config.SHOPIFY_STORE or "").replace(".myshopify.com", "")
+    by_sku: dict = {}
+    after = None
+    while True:
+        data = await shopify_client._query(query, {"after": after})
+        block = data.get("orders") or {}
+        for edge in block.get("edges", []):
+            node = edge["node"]
+            order_id = str(node["id"]).split("/")[-1]
+            entry_base = {
+                "order_number": node.get("name", ""),
+                "created_at": node.get("createdAt"),
+                "admin_url": SHOPIFY_ADMIN_ORDER_URL.format(
+                    store=store_handle, order_id=order_id),
+            }
+            for li_edge in (node.get("lineItems") or {}).get("edges", []):
+                li = li_edge["node"]
+                sku = li.get("sku")
+                if not sku:
+                    continue
+                qty = li.get("unfulfilledQuantity")
+                if qty is None:
+                    qty = li.get("quantity") or 0
+                if qty <= 0:
+                    continue
+                key = normalize_sku(sku).upper()
+                by_sku.setdefault(key, []).append({**entry_base, "qty": qty})
+        page = block.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        after = page.get("endCursor")
+
+    # Oldest first — the order that has been waiting longest is the one that
+    # matters when deciding what to chase.
+    for entries in by_sku.values():
+        entries.sort(key=lambda e: e.get("created_at") or "")
+    return by_sku
+
+
 @app.get("/api/backorders")
 async def get_backorders(token: str = Depends(verify_token)):
     """
@@ -1734,6 +1965,20 @@ async def get_backorders(token: str = Depends(verify_token)):
     """
     try:
         items = db.get_backorder_items()
+
+        # Attach the customer orders behind each backorder. Best effort: if
+        # Shopify is unreachable the list still renders, just without dates.
+        try:
+            from .shopify_client import normalize_sku
+            by_sku = await _unfulfilled_orders_by_sku()
+            for item in items:
+                key = normalize_sku(item.get("sku") or "").upper()
+                item["backorder_orders"] = by_sku.get(key, [])
+        except Exception as e:
+            logger.warning(f"Could not attach backorder source orders: {e}")
+            for item in items:
+                item["backorder_orders"] = []
+
         summary = {
             "total_items": len(items),
             "total_backordered_units": sum(abs(i.get("current_stock", 0)) for i in items),
@@ -2813,6 +3058,7 @@ async def vendors_bulk_update_costs(
             # variant. Skip the rest with a warning.
             by_variant = {}
             collisions = []
+            no_variant = []
             for row in cursor.fetchall():
                 supplier_sku = row[0]
                 supplier_cost = float(row[1]) if row[1] else 0
@@ -2820,6 +3066,12 @@ async def vendors_bulk_update_costs(
                 current_cost = float(row[3]) if row[3] else 0
                 variant_id = row[4]
                 if not variant_id:
+                    # No variant id cached, so there is nothing to update.
+                    # Only worth reporting when the cost actually differs —
+                    # an invisible skip on a real change is exactly why costs
+                    # looked "identified but not applied".
+                    if abs(round(supplier_cost * fx_rate, 2) - current_cost) > 0.50:
+                        no_variant.append(shopify_sku)
                     continue
                 is_exact = (supplier_sku or '').upper() == (shopify_sku or '').upper()
                 existing = by_variant.get(variant_id)
@@ -2865,13 +3117,26 @@ async def vendors_bulk_update_costs(
             conn.close()
 
         if not items_to_update:
+            if no_variant:
+                return {
+                    'status': 'ok', 'updated': 0, 'total': len(no_variant),
+                    'results': [
+                        {'sku': sku, 'status': 'skipped',
+                         'message': 'No Shopify variant cached — refresh inventory'}
+                        for sku in no_variant
+                    ],
+                }
             return {'status': 'ok', 'updated': 0, 'total': 0, 'message': 'No cost changes to apply (all costs within $0.50 of pricelist)'}
 
         # Look up inventory_item_ids for each variant
         skus = [item['sku'] for item in items_to_update]
         inventory_data = await shopify_client.lookup_inventory_by_skus(skus)
 
-        results = []
+        results = [
+            {'sku': sku, 'status': 'skipped',
+             'message': 'No Shopify variant cached — refresh inventory'}
+            for sku in no_variant
+        ]
         updated = 0
         for item in items_to_update:
             inv_info = inventory_data.get(item['sku'])
@@ -2896,7 +3161,7 @@ async def vendors_bulk_update_costs(
         return {
             'status': 'ok',
             'updated': updated,
-            'total': len(items_to_update),
+            'total': len(items_to_update) + len(no_variant),
             'fx_rate': fx_rate,
             'currency': cost_currency,
             'results': results,
@@ -3234,6 +3499,7 @@ async def products_remove_tag(data: BulkTagRequest, token: str = Depends(verify_
 from .vendor_mgmt import (
     get_all_vendor_settings,
     upsert_vendor_settings,
+    record_stock_check,
     fetch_fx_rate,
     get_fx_rate,
     save_fx_rate,
@@ -3278,6 +3544,41 @@ async def vendors_upsert(data: VendorSettingsUpdate, token: str = Depends(verify
         return upsert_vendor_settings(db, data.dict())
     except Exception as e:
         logger.error(f"Vendor upsert error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class StockCheckRequest(BaseModel):
+    """All fields optional: the common case is a one-click 'checked today',
+    which stamps today's date and the caller's own name."""
+    date: Optional[str] = None   # YYYY-MM-DD; defaults to today (UTC)
+    by: Optional[str] = None     # defaults to the signed-in user
+    notes: Optional[str] = None
+    clear: bool = False          # reset to "never counted" (undo a mis-click)
+
+
+@app.post("/api/vendors/{vendor}/stock-check")
+async def vendors_record_stock_check(
+    vendor: str,
+    data: StockCheckRequest = StockCheckRequest(),
+    token: str = Depends(verify_token),
+    user: str = Depends(current_user),
+):
+    """Record a physical stock count for this vendor.
+
+    Replaces the hand-maintained "Inventory Check" tab of the ops Google
+    Sheet. `by` falls back to the caller's token identity so the count is
+    always attributable.
+    """
+    try:
+        return record_stock_check(
+            db, vendor,
+            check_date=data.date,
+            by=(data.by or (user if user != "Unknown" else None)),
+            notes=data.notes,
+            clear=data.clear,
+        )
+    except Exception as e:
+        logger.error(f"Stock check error for {vendor}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -4384,6 +4685,74 @@ async def api_check_sale_schedule(token: str = Depends(verify_token)):
         logger.error(f"Schedule check error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+# ─── CO-PURCHASE RECOMMENDATIONS ─────────────────────────────────────────
+# The analysis runs in the func-freshdesk-bot function app. TC-Planner
+# proxies to it so the function key stays server-side, and so the UI has a
+# single origin to talk to.
+#
+# The job runs for several minutes, well past the ~230s Azure holds an idle
+# HTTP connection open. The recompute call therefore fires and returns; the
+# outcome is read back from the status endpoint.
+
+def _copurchase_headers():
+    if not config.COPURCHASE_FUNCTION_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="COPURCHASE_FUNCTION_KEY is not configured on this server",
+        )
+    return {"x-functions-key": config.COPURCHASE_FUNCTION_KEY}
+
+
+@app.post("/api/copurchase/recompute")
+async def copurchase_recompute(
+    months: int = Query(0, ge=0, le=120),   # 0 = entire order history
+    token: str = Depends(verify_token),
+    user: str = Depends(current_user),
+):
+    """Kick off a co-purchase recompute. Returns as soon as it is running."""
+    url = config.COPURCHASE_FUNCTION_URL.rstrip("/") + "/api/recompute_copurchase"
+    headers = _copurchase_headers()
+    try:
+        # Short timeout on purpose: we only need to know the request landed.
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(url, params={"months": months}, headers=headers)
+        if resp.status_code == 409:
+            return {"status": "already_running", "detail": resp.json()}
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=502,
+                                detail=f"Function returned {resp.status_code}: {resp.text[:200]}")
+        # Finished inside 20s (only plausible for a tiny catalogue).
+        return {"status": "ok", "result": resp.json()}
+    except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.WriteTimeout):
+        # Expected path. The function keeps running after we stop waiting.
+        logger.info("Co-purchase recompute started by %s (%d months)", user, months)
+        return {"status": "started",
+                "message": "Recompute started — this takes several minutes."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Co-purchase recompute error: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/copurchase/status")
+async def copurchase_status(token: str = Depends(verify_token)):
+    """Progress of a running recompute, or the last run's summary."""
+    url = config.COPURCHASE_FUNCTION_URL.rstrip("/") + "/api/copurchase_status"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, headers=_copurchase_headers())
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=502,
+                                detail=f"Function returned {resp.status_code}")
+        return resp.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Co-purchase status error: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=str(e))
 
 # ─── SKU LOOKUP ──────────────────────────────────────────────────
 

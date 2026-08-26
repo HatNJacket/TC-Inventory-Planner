@@ -948,7 +948,8 @@ function PricelistModal({ vendor, initialResult, onDone, onClose, onToast }) {
                       onToast?.('Updating costs in Shopify...', 'success');
                       try {
                         const res = await api.bulkUpdateCosts(vendor.vendor);
-                        onToast?.(`Updated ${res.updated} of ${res.total} costs`, 'success');
+                        const { msg, isError } = summariseBulkResult(res, 'costs');
+                        onToast?.(msg, isError ? 'error' : 'success');
                       } catch (err) { onToast?.('Cost update failed: ' + err.message, 'error'); }
                       setBulkOp(null);
                     }}
@@ -1009,7 +1010,8 @@ function PricelistModal({ vendor, initialResult, onDone, onClose, onToast }) {
                       onToast?.('Updating selling prices in Shopify...', 'success');
                       try {
                         const res = await api.bulkUpdatePrices(vendor.vendor);
-                        onToast?.(`Updated ${res.updated} of ${res.total} prices`, 'success');
+                        const { msg, isError } = summariseBulkResult(res, 'prices');
+                        onToast?.(msg, isError ? 'error' : 'success');
                       } catch (err) { onToast?.('Price update failed: ' + err.message, 'error'); }
                       setBulkOp(null);
                     }}
@@ -1441,7 +1443,10 @@ const cellInput = {
 // pricelist upload). The user pastes a vendor product URL and optionally
 // supplies pricing; the backend's create-draft endpoint AI-enriches the
 // description from the URL using the vendor's saved scrape config.
-function CreateDraftModal({ vendor, onClose, onToast }) {
+function CreateDraftModal({ vendor, vendors = [], onClose, onToast }) {
+  // Opened from a vendor row the vendor arrives preselected; opened from the
+  // page-level button it starts empty and is picked from the dropdown below.
+  const [vendorName, setVendorName] = useState(vendor?.vendor || '');
   const [productUrl, setProductUrl] = useState('');
   const [sku, setSku] = useState('');
   const [description, setDescription] = useState('');
@@ -1452,7 +1457,16 @@ function CreateDraftModal({ vendor, onClose, onToast }) {
   const [barcode, setBarcode] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const currency = vendor?.invoice_currency || 'USD';
+  // Resolve the full vendor record so the cost field is labelled with the
+  // right invoice currency as soon as a vendor is chosen.
+  const selectedVendor = vendors.find(v => v.vendor === vendorName)
+    || (vendor?.vendor === vendorName ? vendor : null);
+  const currency = selectedVendor?.invoice_currency || 'USD';
+
+  const vendorOptions = (vendors.length ? vendors : (vendor ? [vendor] : []))
+    .map(v => v.vendor)
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 
   const inputStyle = {
     padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)',
@@ -1462,6 +1476,10 @@ function CreateDraftModal({ vendor, onClose, onToast }) {
   const labelStyle = { fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, display: 'block' };
 
   const handleSubmit = async () => {
+    if (!vendorName) {
+      onToast?.('Choose a vendor', 'error');
+      return;
+    }
     if (!sku.trim()) {
       onToast?.('SKU is required', 'error');
       return;
@@ -1469,7 +1487,7 @@ function CreateDraftModal({ vendor, onClose, onToast }) {
     setSubmitting(true);
     try {
       const res = await api.createDraftProduct({
-        vendor: vendor.vendor,
+        vendor: vendorName,
         sku: sku.trim(),
         description: description.trim(),
         cost_foreign: parseFloat(costForeign) || 0,
@@ -1506,14 +1524,26 @@ function CreateDraftModal({ vendor, onClose, onToast }) {
       }} onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
           <div style={{ fontSize: 16, fontWeight: 600 }}>
-            Create Draft Product — {vendor.vendor}
+            Create Draft Product{vendorName ? ' — ' + vendorName : ''}
           </div>
           <button onClick={onClose}
             style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--text-muted)' }}>✕</button>
         </div>
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 16 }}>
-          Pricing fields are optional. If you paste a product URL, the backend
-          will pull the title and description using this vendor's scrape config.
+          No pricelist needed. Pricing fields are optional — if you paste a
+          product URL, the backend pulls the title, description, specs and
+          images using this vendor's scrape config.
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>Vendor <span style={{ color: '#ef4444' }}>*</span></label>
+          <select value={vendorName} onChange={e => setVendorName(e.target.value)}
+            style={inputStyle}>
+            <option value="">Select a vendor…</option>
+            {vendorOptions.map(name => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
         </div>
 
         <div style={{ marginBottom: 12 }}>
@@ -1522,7 +1552,7 @@ function CreateDraftModal({ vendor, onClose, onToast }) {
             onChange={e => setProductUrl(e.target.value)}
             placeholder="https://vendor.com/products/..."
             style={inputStyle}
-            autoFocus />
+            autoFocus={!!vendorName} />
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
@@ -1590,12 +1620,12 @@ function CreateDraftModal({ vendor, onClose, onToast }) {
               padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)',
               cursor: 'pointer', backgroundColor: 'transparent', color: 'var(--text)', fontSize: 13,
             }}>Cancel</button>
-          <button onClick={handleSubmit} disabled={submitting || !sku.trim()}
+          <button onClick={handleSubmit} disabled={submitting || !sku.trim() || !vendorName}
             style={{
               padding: '8px 16px', borderRadius: 6, border: 'none',
-              cursor: submitting || !sku.trim() ? 'not-allowed' : 'pointer',
+              cursor: submitting || !sku.trim() || !vendorName ? 'not-allowed' : 'pointer',
               backgroundColor: '#22c55e', color: '#fff', fontWeight: 600, fontSize: 13,
-              opacity: submitting || !sku.trim() ? 0.6 : 1,
+              opacity: submitting || !sku.trim() || !vendorName ? 0.6 : 1,
             }}>{submitting ? 'Creating...' : 'Create Draft'}</button>
         </div>
       </div>
@@ -1907,9 +1937,159 @@ function VendorSaleModal({ vendor, onClose, onToast }) {
   );
 }
 
-function InlineVendorRow({ vendor, onSave, onPricelist, onRecompare, onScrapeConfig, onSkuMappings, onCreateDraft, onUploadSale, rowBg }) {
+// How long a physical stock count stays "fresh". Anything past a year is
+// flagged red — some vendors had gone 10 months unnoticed on the old sheet.
+const STOCK_CHECK_WARN_DAYS = 180;
+const STOCK_CHECK_STALE_DAYS = 365;
+
+// Who can be recorded as having done a stock count. Kept separate from the
+// API token list on purpose: counts are often entered by one person on
+// another's behalf, and not everyone who counts has a login.
+const STOCK_CHECK_STAFF = ['Matt', 'Clay', 'Stephen', 'Nick', 'Alex'];
+
+// Login tokens and the roster spell one person differently, so map the token
+// identity onto the roster name — otherwise signing in as Steve leaves the
+// selector blank and the one-click case stops working for him.
+const STOCK_CHECK_ALIASES = { Steve: 'Stephen' };
+const rosterName = (name) => STOCK_CHECK_ALIASES[name] || name;
+
+function daysSinceDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d)) return null;
+  return Math.floor((Date.now() - d.getTime()) / 86400000);
+}
+
+function StockCheckCell({ vendor, onChecked, currentUser }) {
+  const [busy, setBusy] = useState(false);
+  // Default to whoever is recorded, else the signed-in user when they are on
+  // the roster, so the common "I counted it myself" case is one click.
+  const [who, setWho] = useState(() => {
+    const recorded = vendor.last_stock_check_by;
+    if (recorded && STOCK_CHECK_STAFF.includes(recorded)) return recorded;
+    if (recorded) return recorded;               // historic name (e.g. Danielle)
+    const mine = rosterName(currentUser);
+    return STOCK_CHECK_STAFF.includes(mine) ? mine : '';
+  });
+  const days = daysSinceDate(vendor.last_stock_check_date);
+
+  let color = 'var(--text-muted)', label = 'Never';
+  if (days != null) {
+    label = new Date(vendor.last_stock_check_date + 'T00:00:00')
+      .toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric' });
+    color = days >= STOCK_CHECK_STALE_DAYS ? 'var(--red, #c0392b)'
+          : days >= STOCK_CHECK_WARN_DAYS ? 'var(--orange, #d97706)'
+          : 'var(--green, #16a34a)';
+  } else {
+    color = 'var(--red, #c0392b)';
+  }
+
+  const title = days == null
+    ? 'Never counted — click to record a count today'
+    : `${days} day${days === 1 ? '' : 's'} ago`
+      + (vendor.last_stock_check_by ? ` by ${vendor.last_stock_check_by}` : '')
+      + (vendor.last_stock_check_notes ? `\n${vendor.last_stock_check_notes}` : '');
+
+  // Shift-click clears the check — the undo for a mis-clicked ✓.
+  const mark = async (e) => {
+    const clearing = e && e.shiftKey;
+    if (clearing && !window.confirm(
+      `Clear the stock check for ${vendor.vendor}? It will show as never counted.`)) return;
+    setBusy(true);
+    try { await onChecked({ clear: clearing, by: who }); } finally { setBusy(false); }
+  };
+
+  // Changing the name on an already-counted vendor corrects who did it and
+  // leaves the date alone. With no count recorded yet it only sets the
+  // selection — picking a name is not the same as saying it was counted.
+  const changeWho = async (name) => {
+    setWho(name);
+    if (!name || !vendor.last_stock_check_date) return;
+    setBusy(true);
+    try {
+      await onChecked({ by: name, date: vendor.last_stock_check_date });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <td style={{ padding: '4px 6px', textAlign: 'center', whiteSpace: 'nowrap' }} title={title}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
+        <span style={{ color, fontWeight: days != null && days < STOCK_CHECK_WARN_DAYS ? 500 : 600 }}>
+          {label}
+        </span>
+        <button onClick={mark} disabled={busy}
+          title="Record a stock count for today (shift-click to clear)"
+          style={{
+            border: '1px solid var(--border)', borderRadius: 4, cursor: busy ? 'default' : 'pointer',
+            background: 'var(--card-bg)', color: 'var(--text-muted)', fontSize: 11,
+            padding: '1px 5px', lineHeight: 1.4, opacity: busy ? 0.5 : 1,
+          }}>✓</button>
+      </div>
+      <select
+        value={who}
+        disabled={busy}
+        onChange={e => changeWho(e.target.value)}
+        title="Who performed the count"
+        style={{
+          marginTop: 2, fontSize: 10, padding: '0 2px', maxWidth: 92,
+          border: '1px solid transparent', borderRadius: 3,
+          background: 'transparent', color: 'var(--text-muted)',
+          cursor: busy ? 'default' : 'pointer',
+        }}>
+        <option value="">— who? —</option>
+        {STOCK_CHECK_STAFF.map(n => <option key={n} value={n}>{n}</option>)}
+        {/* Keep a historic name selectable so re-saving does not silently lose it */}
+        {who && !STOCK_CHECK_STAFF.includes(who) && <option value={who}>{who}</option>}
+      </select>
+    </td>
+  );
+}
+
+// Bulk cost/price updates can skip individual SKUs (no inventory item,
+// Shopify error). The API returns a per-SKU results array, but only the
+// counts used to be shown — so a silently dropped SKU looked like the
+// update had simply not worked. Summarise the failures instead.
+function summariseBulkResult(res, noun) {
+  const results = Array.isArray(res.results) ? res.results : [];
+  const failed = results.filter(r => r.status !== 'ok');
+  let msg = `Updated ${res.updated} of ${res.total} ${noun}`;
+  if (!failed.length) return { msg, isError: false };
+
+  const reasons = {};
+  failed.forEach(r => {
+    const why = r.message || r.status || 'unknown';
+    (reasons[why] = reasons[why] || []).push(r.sku);
+  });
+  const parts = Object.entries(reasons).map(([why, skus]) => {
+    const shown = skus.slice(0, 4).join(', ');
+    const more = skus.length > 4 ? ` +${skus.length - 4} more` : '';
+    return `${why}: ${shown}${more}`;
+  });
+  msg += ` — ${failed.length} not applied. ` + parts.join(' | ');
+  return { msg, isError: true };
+}
+
+function InlineVendorRow({ vendor, onSave, onPricelist, onRecompare, onScrapeConfig, onSkuMappings, onCreateDraft, onUploadSale, rowBg, currentUser }) {
   const [saving, setSaving] = useState(false);
   const [local, setLocal] = useState({ ...vendor });
+
+  // Stock checks go through their own endpoint, which writes only the three
+  // stock-check columns — routing them through saveField() would rewrite
+  // every settings column from possibly-stale local state.
+  // opts: { clear?, by?, date? }. Omitting date lets the server stamp today;
+  // passing the existing date corrects the name without moving the count.
+  const applyStockCheck = async (opts = {}) => {
+    const { clear = false, by, date } = opts;
+    const payload = clear ? { clear: true } : {};
+    if (!clear && by) payload.by = by;
+    if (!clear && date) payload.date = date;
+    const res = await api.recordStockCheck(local.vendor, payload);
+    setLocal(l => ({
+      ...l,
+      last_stock_check_date: res.last_stock_check_date || null,
+      last_stock_check_by: res.last_stock_check_by || null,
+    }));
+  };
 
   // Auto-save on change for dropdowns and toggles
   const saveField = async (updates) => {
@@ -2000,6 +2180,7 @@ function InlineVendorRow({ vendor, onSave, onPricelist, onRecompare, onScrapeCon
           onKeyDown={e => e.key === 'Enter' && e.target.blur()}
           style={{ ...cellInput, width: 45, textAlign: 'right' }} />
       </td>
+      <StockCheckCell vendor={local} onChecked={applyStockCheck} currentUser={currentUser} />
       <td style={{ padding: '6px 10px', textAlign: 'right' }}>{vendor.total_skus}</td>
       <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmt(vendor.inventory_value)}</td>
       <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmt(vendor.revenue_365d)}</td>
@@ -2087,7 +2268,7 @@ function InlineVendorRow({ vendor, onSave, onPricelist, onRecompare, onScrapeCon
 
 // --- MAIN PAGE ---
 
-export default function VendorManagementPage({ onToast }) {
+export default function VendorManagementPage({ onToast, currentUser }) {
   const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [pricelistVendor, setPricelistVendor] = useState(null);
@@ -2124,11 +2305,38 @@ export default function VendorManagementPage({ onToast }) {
   };
 
   const sorted = useMemo(() => {
+    // A vendor that has never been counted is the MOST overdue, so an absent
+    // date sorts as the oldest possible one rather than as empty.
+    const valueFor = (row) => {
+      const raw = row[sortField];
+      if (sortField === 'last_stock_check_date') return raw || '0000-00-00';
+      return raw;
+    };
+    const isEmpty = (v) => v === null || v === undefined || v === '';
+
     return [...vendors].sort((a, b) => {
-      const av = a[sortField] ?? 0;
-      const bv = b[sortField] ?? 0;
-      if (typeof av === 'string') return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
-      return sortDir === 'asc' ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+      const av = valueFor(a);
+      const bv = valueFor(b);
+
+      // Blanks always sink to the bottom, whichever way the column is sorted.
+      if (isEmpty(av) && isEmpty(bv)) return 0;
+      if (isEmpty(av)) return 1;
+      if (isEmpty(bv)) return -1;
+
+      // Compare as text only when both sides really are text. The previous
+      // version switched on the left value alone and then called
+      // localeCompare on the right one, which threw whenever a nullable
+      // string column mixed a real value with a missing one.
+      let cmp;
+      if (typeof av === 'string' || typeof bv === 'string') {
+        cmp = String(av).localeCompare(String(bv), undefined, { numeric: true });
+      } else {
+        cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      }
+      // Break ties on vendor name so the order is stable and predictable
+      // rather than depending on the order rows arrived in.
+      if (cmp === 0) return String(a.vendor).localeCompare(String(b.vendor));
+      return sortDir === 'asc' ? cmp : -cmp;
     });
   }, [vendors, sortField, sortDir]);
 
@@ -2143,11 +2351,24 @@ export default function VendorManagementPage({ onToast }) {
 
   return (
     <div style={{ padding: 24, maxWidth: 1600 }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Vendor Management</h1>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-          Edit settings directly in the table. Changes save automatically.
+      <div style={{
+        marginBottom: 20, display: 'flex', alignItems: 'flex-start',
+        justifyContent: 'space-between', gap: 16, flexWrap: 'wrap',
+      }}>
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Vendor Management</h1>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+            Edit settings directly in the table. Changes save automatically.
+          </div>
         </div>
+        <button
+          onClick={() => setCreateDraftVendor({})}
+          title="Create a Shopify draft listing from a product URL — no pricelist required"
+          style={{
+            padding: '8px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+            backgroundColor: '#22c55e', color: '#fff', fontWeight: 600, fontSize: 13,
+            whiteSpace: 'nowrap',
+          }}>+ New Draft Listing</button>
       </div>
 
       <FxRatePanel onToast={onToast} />
@@ -2168,6 +2389,7 @@ export default function VendorManagementPage({ onToast }) {
                   { key: 'po_reminder', label: 'PO Reminder', align: 'left' },
                   { key: 'default_markup_pct', label: 'Markup %', align: 'right' },
                   { key: 'lead_time_days', label: 'Lead Time', align: 'right' },
+                  { key: 'last_stock_check_date', label: 'Stock Check', align: 'center' },
                   { key: 'total_skus', label: 'SKUs', align: 'right' },
                   { key: 'inventory_value', label: 'Inv Value', align: 'right' },
                   { key: 'revenue_365d', label: 'Revenue', align: 'right' },
@@ -2200,6 +2422,7 @@ export default function VendorManagementPage({ onToast }) {
                   onSkuMappings={(vendor) => setSkuMappingsVendor(prev => prev?.vendor === vendor.vendor ? null : vendor)}
                   onCreateDraft={(vendor) => setCreateDraftVendor(vendor)}
                   onUploadSale={(vendor) => setSaleVendor(vendor)}
+                  currentUser={currentUser}
                 />
               ))}
             </tbody>
@@ -2232,6 +2455,7 @@ export default function VendorManagementPage({ onToast }) {
       {createDraftVendor && (
         <CreateDraftModal
           vendor={createDraftVendor}
+          vendors={vendors}
           onClose={() => setCreateDraftVendor(null)}
           onToast={onToast}
         />

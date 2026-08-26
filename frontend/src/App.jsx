@@ -1323,7 +1323,7 @@ export default function App() {
       case 'market':
         return <MarketIntelPage onToast={showToast} />;
       case 'vendors':
-        return <VendorManagementPage onToast={showToast} />;
+        return <VendorManagementPage onToast={showToast} currentUser={currentUser} />;
       case 'cogs':
         return <CogsPage onToast={showToast} />;
       case 'sales_manager':

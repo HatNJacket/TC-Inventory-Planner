@@ -69,6 +69,35 @@ CREATE TABLE stock_order_receipts (
 IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_stock_order_receipts_order')
     CREATE INDEX IX_stock_order_receipts_order ON stock_order_receipts(stock_order_id);
 
+-- Whether this receipt has been pushed to Shopify. Receiving records stock
+-- in our database; a second step adjusts Shopify. That link used to live
+-- only in browser state, so a refresh or starting the next batch silently
+-- orphaned a receive and the units never reached Shopify (PO 936, Aug 2026).
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('stock_order_receipts') AND name = 'pushed_at')
+    ALTER TABLE stock_order_receipts ADD pushed_at DATETIME2 NULL;
+
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('stock_order_receipts') AND name = 'pushed_qty')
+    ALTER TABLE stock_order_receipts ADD pushed_qty INT NOT NULL DEFAULT 0;
+
+-- Reversals of a receive. Kept in its own table rather than as negative
+-- receipt rows, because the receipt sums drive the "not yet in Shopify"
+-- warning and a negative row would corrupt that arithmetic.
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'stock_order_receipt_undos')
+CREATE TABLE stock_order_receipt_undos (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    stock_order_id INT NOT NULL,
+    stock_order_item_id INT NOT NULL,
+    sku NVARCHAR(100) NULL,
+    qty INT NOT NULL,
+    shopify_adjusted INT NOT NULL DEFAULT 0,
+    undone_by NVARCHAR(100) NULL,
+    undone_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+);
+
+IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_receipt_undos_order')
+    CREATE INDEX IX_receipt_undos_order ON stock_order_receipt_undos(stock_order_id);
+
+
 -- Sale tracking on PO line items: when a line is added during a vendor
 -- sale window, is_vendor_sale=1 and regular_unit_cost preserves the
 -- non-sale cost so the UI can show "was $X, on sale at $Y" and reports
@@ -441,6 +470,19 @@ IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('vendor_set
 IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('vendor_settings') AND name = 'po_reminder_active')
     ALTER TABLE vendor_settings ADD po_reminder_active BIT NOT NULL DEFAULT 1;
 
+-- ─── PHYSICAL STOCK CHECKS ────────────────────────────────────────
+-- When someone last counted this vendor's stock on the shelf. Previously
+-- kept by hand on the "Inventory Check" tab of the ops Google Sheet, which
+-- was invisible from this app and had to be edited separately.
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('vendor_settings') AND name = 'last_stock_check_date')
+    ALTER TABLE vendor_settings ADD last_stock_check_date DATE NULL;
+
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('vendor_settings') AND name = 'last_stock_check_by')
+    ALTER TABLE vendor_settings ADD last_stock_check_by NVARCHAR(100) NULL;
+
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('vendor_settings') AND name = 'last_stock_check_notes')
+    ALTER TABLE vendor_settings ADD last_stock_check_notes NVARCHAR(500) NULL;
+
 -- ─── VENDOR PROMO PRICING (TEMPORARY COST DISCOUNTS FROM VENDORS) ─
 -- Tracks vendor-side promotional pricing windows — costs WE pay during a
 -- vendor's promo. Each row is a SKU with a sale cost effective between
@@ -590,6 +632,36 @@ class Database:
                     except Exception as e:
                         logger.warning(f"Schema statement warning: {e}")
             conn.commit()
+
+            # One-time backfill. The pushed_qty column defaults to 0, which
+            # would make every historical receive look outstanding and bury
+            # the real ones in false warnings. We cannot know retroactively
+            # which were pushed, so existing rows are assumed pushed; only
+            # receives recorded from here on are tracked for real.
+            try:
+                cursor.execute(
+                    "SELECT setting_value FROM app_settings WHERE setting_key = ?",
+                    'receipts_push_backfill_done',
+                )
+                if not cursor.fetchone():
+                    cursor.execute(
+                        """UPDATE stock_order_receipts
+                           SET pushed_qty = received_qty,
+                               pushed_at = COALESCE(pushed_at, received_at)
+                           WHERE pushed_qty = 0"""
+                    )
+                    backfilled = cursor.rowcount
+                    cursor.execute(
+                        """INSERT INTO app_settings (setting_key, setting_value)
+                           VALUES (?, ?)""",
+                        'receipts_push_backfill_done',
+                        f'backfilled {backfilled} rows',
+                    )
+                    conn.commit()
+                    logger.info("Receipt push backfill: %s rows", backfilled)
+            except Exception as e:
+                logger.warning(f"Receipt push backfill skipped: {e}")
+
             logger.info("Database schema initialized")
         finally:
             conn.close()
@@ -1139,7 +1211,8 @@ class Database:
             # the UI can show it on hover over the Received column.
             try:
                 cursor.execute(
-                    """SELECT stock_order_item_id, received_qty, received_by, received_at
+                    """SELECT stock_order_item_id, received_qty, received_by, received_at,
+                              pushed_qty, pushed_at
                        FROM stock_order_receipts
                        WHERE stock_order_id = ?
                        ORDER BY received_at ASC""",
@@ -1151,13 +1224,25 @@ class Database:
                         "received_qty": rr[1],
                         "received_by": rr[2] or "Unknown",
                         "received_at": rr[3].isoformat() if rr[3] else None,
+                        "pushed_qty": rr[4] or 0,
+                        "pushed_at": rr[5].isoformat() if rr[5] else None,
                     })
                 for it in rows:
-                    it["receipts"] = receipts_by_item.get(it.get("id"), [])
+                    rc = receipts_by_item.get(it.get("id"), [])
+                    it["receipts"] = rc
+                    # Units recorded as received but not yet adjusted in
+                    # Shopify. Drives the "not yet in Shopify" warning.
+                    it["unpushed_qty"] = sum(
+                        max(0, (r["received_qty"] or 0) - (r["pushed_qty"] or 0)) for r in rc
+                    )
             except Exception as e:
                 logger.warning(f"Could not load receipt history for order {order_id}: {e}")
                 for it in rows:
                     it["receipts"] = []
+                    it["unpushed_qty"] = 0
+
+            order["unpushed_qty"] = sum(it.get("unpushed_qty") or 0 for it in rows)
+            order["unpushed_lines"] = sum(1 for it in rows if (it.get("unpushed_qty") or 0) > 0)
 
             # Surface the vendor's label-printing flag at the order level
             # so the receive flow can decide whether to fire ZPL prints
@@ -1611,6 +1696,192 @@ class Database:
         finally:
             conn.close()
 
+    def undo_receive(self, order_id: int, item_id: int, qty: int,
+                     undone_by: str = None) -> Dict:
+        """Reverse up to ``qty`` received units on one PO line.
+
+        Receipts are unwound newest-first, mirroring how someone would
+        correct a mistake they just made. Returns how many units were
+        reversed and, of those, how many had already been pushed to Shopify
+        — the caller must take those back out of Shopify or the stock will
+        be overstated by exactly that amount.
+        """
+        if qty <= 0:
+            return {"undone": 0, "pushed_undone": 0}
+
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """SELECT sku, received_qty FROM stock_order_items
+                   WHERE id = ? AND stock_order_id = ?""",
+                item_id, order_id,
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError("Line item not found on this order")
+            sku, received_qty = row[0], int(row[1] or 0)
+            if received_qty <= 0:
+                return {"undone": 0, "pushed_undone": 0, "sku": sku}
+
+            qty = min(qty, received_qty)
+
+            # Unwind receipt rows newest-first.
+            cursor.execute(
+                """SELECT id, received_qty, pushed_qty
+                   FROM stock_order_receipts
+                   WHERE stock_order_id = ? AND stock_order_item_id = ?
+                   ORDER BY received_at DESC, id DESC""",
+                order_id, item_id,
+            )
+            remaining = qty
+            pushed_undone = 0
+            for rid, rqty, pqty in cursor.fetchall():
+                if remaining <= 0:
+                    break
+                rqty = int(rqty or 0)
+                pqty = int(pqty or 0)
+                take = min(rqty, remaining)
+                if take <= 0:
+                    continue
+                # Pushed units are consumed last within a row, so undoing a
+                # partial receipt reverses the not-yet-pushed part first and
+                # leaves Shopify untouched where possible.
+                still_unpushed = max(0, rqty - pqty)
+                from_unpushed = min(take, still_unpushed)
+                from_pushed = take - from_unpushed
+                pushed_undone += from_pushed
+
+                new_r = rqty - take
+                new_p = pqty - from_pushed
+                if new_r <= 0:
+                    cursor.execute(
+                        "DELETE FROM stock_order_receipts WHERE id = ?", rid)
+                else:
+                    cursor.execute(
+                        """UPDATE stock_order_receipts
+                           SET received_qty = ?, pushed_qty = ?
+                           WHERE id = ?""",
+                        new_r, max(0, new_p), rid,
+                    )
+                remaining -= take
+
+            # Older receives may predate receipt tracking, in which case the
+            # line total is the only record. Reverse it regardless.
+            undone = qty - max(0, remaining)
+            if undone <= 0:
+                undone = qty
+
+            cursor.execute(
+                """UPDATE stock_order_items
+                   SET received_qty = CASE WHEN received_qty - ? < 0 THEN 0
+                                           ELSE received_qty - ? END,
+                       updated_at = GETUTCDATE()
+                   WHERE id = ? AND stock_order_id = ?""",
+                undone, undone, item_id, order_id,
+            )
+
+            cursor.execute(
+                """INSERT INTO stock_order_receipt_undos
+                   (stock_order_id, stock_order_item_id, sku, qty,
+                    shopify_adjusted, undone_by)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                order_id, item_id, sku, undone, pushed_undone,
+                (undone_by or "Unknown"),
+            )
+
+            # A PO closed by that receive must reopen.
+            cursor.execute(
+                """SELECT SUM(ordered_qty), SUM(received_qty)
+                   FROM stock_order_items WHERE stock_order_id = ?""",
+                order_id,
+            )
+            totals = cursor.fetchone()
+            if totals:
+                ordered = totals[0] or 0
+                received = totals[1] or 0
+                if received <= 0:
+                    new_status = "open"
+                elif received < ordered:
+                    new_status = "partial_received"
+                else:
+                    new_status = "closed"
+                cursor.execute(
+                    """UPDATE stock_orders
+                       SET status = ?, updated_at = GETUTCDATE(),
+                           closed_at = CASE WHEN ? = 'closed' THEN closed_at ELSE NULL END
+                       WHERE id = ?""",
+                    new_status, new_status, order_id,
+                )
+
+            conn.commit()
+            return {"undone": undone, "pushed_undone": pushed_undone, "sku": sku}
+        finally:
+            conn.close()
+
+    def mark_receipts_pushed(self, order_id: int, item_id: int, qty: int) -> int:
+        """Mark up to ``qty`` units of this line's receipts as pushed to Shopify.
+
+        Oldest receipts are consumed first, so a partial push leaves the
+        remainder still flagged as outstanding. Returns the units marked.
+        """
+        if qty <= 0:
+            return 0
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT id, received_qty, pushed_qty
+                   FROM stock_order_receipts
+                   WHERE stock_order_id = ? AND stock_order_item_id = ?
+                     AND pushed_qty < received_qty
+                   ORDER BY received_at ASC""",
+                order_id, item_id,
+            )
+            remaining = qty
+            marked = 0
+            for rid, recv, pushed in cursor.fetchall():
+                if remaining <= 0:
+                    break
+                outstanding = (recv or 0) - (pushed or 0)
+                take = min(outstanding, remaining)
+                if take <= 0:
+                    continue
+                cursor.execute(
+                    """UPDATE stock_order_receipts
+                       SET pushed_qty = pushed_qty + ?, pushed_at = GETUTCDATE()
+                       WHERE id = ?""",
+                    take, rid,
+                )
+                remaining -= take
+                marked += take
+            conn.commit()
+            return marked
+        finally:
+            conn.close()
+
+    def get_unpushed_receipts(self, order_id: int):
+        """Line items with receipts that never reached Shopify."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT r.stock_order_item_id, r.sku,
+                          SUM(r.received_qty - r.pushed_qty) AS outstanding
+                   FROM stock_order_receipts r
+                   WHERE r.stock_order_id = ? AND r.pushed_qty < r.received_qty
+                   GROUP BY r.stock_order_item_id, r.sku
+                   HAVING SUM(r.received_qty - r.pushed_qty) > 0""",
+                order_id,
+            )
+            return [
+                {"item_id": row[0], "sku": row[1], "qty": int(row[2] or 0)}
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
     def recalc_on_order_for_skus(self, skus: List[str]) -> int:
         """
         Refresh `on_order`, `replenish_qty`, and `days_of_stock` in the velocity
@@ -1870,6 +2141,17 @@ class Database:
 
             if replenishable_only:
                 where_clauses.append("nrs.sku IS NULL")
+
+                # One-off stock is never reordered. Tags are stored as a
+                # comma-separated string, so both sides are padded with
+                # commas to match a WHOLE tag — a bare LIKE '%used%' would
+                # also strike "Unused" or "Used Equipment".
+                for tag in config.excluded_replenish_tags:
+                    where_clauses.append(
+                        "',' + REPLACE(LOWER(ISNULL(pvc.tags, '')), ', ', ',') + ','"
+                        " NOT LIKE ?"
+                    )
+                    params.append(f"%,{tag},%")
 
             where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 

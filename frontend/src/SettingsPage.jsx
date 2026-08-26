@@ -171,6 +171,8 @@ export default function SettingsPage({ onToast }) {
 
       <BarcodeLabelDiagnostics onToast={onToast} cardStyle={s.card} btnStyle={s.btn} />
 
+      <CoPurchasePanel onToast={onToast} cardStyle={s.card} btnStyle={s.btn} />
+
       <div style={{ ...s.card, backgroundColor: '#f8fafc' }}>
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>How thresholds interact</div>
         <div style={{ fontSize: 11, color: 'var(--text-light)', lineHeight: 1.6 }}>
@@ -191,6 +193,112 @@ export default function SettingsPage({ onToast }) {
 // fire a single test label without needing to receive a real PO line —
 // useful for confirming that Browser Print is running on this machine
 // and the Zebra ZD420 is selected as the default printer.
+// Recompute of the "frequently bought together" recommendations shown on
+// product pages. The work runs in the freshdesk-bot function app and takes
+// several minutes, so the button only starts it — progress is polled from
+// the status endpoint until the run reports back.
+function CoPurchasePanel({ onToast, cardStyle, btnStyle }) {
+  const [status, setStatus] = useState(null);
+  const [starting, setStarting] = useState(false);
+
+  const load = useCallback(async () => {
+    try { setStatus(await api.getCopurchaseStatus()); }
+    catch (e) { setStatus({ state: 'unavailable', error: e.message }); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // While a run is in flight, refresh often enough to feel live without
+  // hammering the function app.
+  useEffect(() => {
+    if (status?.state !== 'running') return undefined;
+    const t = setInterval(load, 15000);
+    return () => clearInterval(t);
+  }, [status?.state, load]);
+
+  const start = async () => {
+    if (!window.confirm(
+      'Recompute related products from the entire order history?\n\n'
+      + 'This rewrites the recommendation metafields on every product. '
+      + 'Products that are no longer active and published are excluded.')) return;
+    setStarting(true);
+    try {
+      const res = await api.recomputeCopurchase(0);   // 0 = all time
+      if (res.status === 'already_running') onToast?.('A recompute is already running', 'error');
+      else onToast?.('Recompute started — this takes several minutes', 'success');
+      setTimeout(load, 2000);
+    } catch (e) {
+      onToast?.('Could not start recompute: ' + e.message, 'error');
+    }
+    setStarting(false);
+  };
+
+  const running = status?.state === 'running';
+  const when = (iso) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d)) return null;
+    const mins = Math.round((Date.now() - d.getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + ' min ago';
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return hrs + ' hour' + (hrs === 1 ? '' : 's') + ' ago';
+    return Math.round(hrs / 24) + ' day' + (Math.round(hrs / 24) === 1 ? '' : 's') + ' ago';
+  };
+
+  let summary;
+  if (!status) summary = 'Checking…';
+  else if (status.state === 'never_run') summary = 'Never run from here yet.';
+  else if (status.state === 'unavailable') summary = 'Status unavailable: ' + (status.error || '');
+  else if (running) {
+    const stage = { fetching_orders: 'Fetching orders from Shopify',
+                    computing: 'Building the co-purchase matrix',
+                    filtering_inactive: 'Excluding inactive listings',
+                    uploading: 'Writing metafields' }[status.stage] || 'Running';
+    summary = stage + '…' + (status.records ? ' (' + status.records.toLocaleString() + ' order records)' : '');
+  } else if (status.state === 'error') {
+    summary = 'Last run failed: ' + (status.error || 'unknown error');
+  } else {
+    summary = 'Updated ' + (status.products_updated || 0).toLocaleString() + ' products from '
+      + (status.orders || 0).toLocaleString() + ' orders over '
+      + (status.months ? status.months + ' months' : 'all time')
+      + (status.elapsed_seconds ? ' in ' + Math.round(status.elapsed_seconds / 60) + ' min' : '')
+      + (status.metafield_errors ? ' — ' + status.metafield_errors + ' metafield errors' : '');
+  }
+
+  const colour = status?.state === 'error' ? '#b91c1c'
+    : running ? '#d97706' : 'var(--text-muted)';
+
+  return (
+    <div style={cardStyle}>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Related Products</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 16 }}>
+        Rebuilds the “frequently bought together” recommendations from the full
+        Shopify order history and writes them to each product’s
+        <code> custom.recommendedsku1–4 </code> metafields, which the theme
+        snippet renders on the product page. Runs automatically every Sunday
+        evening; use the button for an immediate refresh after a big catalogue
+        change.
+      </div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button onClick={start} disabled={starting || running} style={btnStyle('primary')}>
+          {running ? 'Running…' : starting ? 'Starting…' : 'Recompute now'}
+        </button>
+        <button onClick={load} style={btnStyle()}>Refresh status</button>
+        <span style={{ fontSize: 11, color: colour, fontWeight: running ? 600 : 400 }}>
+          {summary}
+        </span>
+      </div>
+      {status?.finished_at && !running && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+          Last run {when(status.finished_at)}
+          {status.trigger ? ' (' + (status.trigger === 'weekly' ? 'scheduled' : 'manual') + ')' : ''}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BarcodeLabelDiagnostics({ onToast, cardStyle, btnStyle }) {
   const [queuing, setQueuing] = useState(false);
   const handleTest = async () => {

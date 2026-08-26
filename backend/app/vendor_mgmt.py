@@ -161,6 +161,8 @@ def get_all_vendor_settings(db) -> List[Dict]:
                 vs.pricelist_barcode_column, vs.pricelist_map_cad_column,
                 vs.pricelist_coo_column,
                 vs.po_reminder, vs.po_reminder_active,
+                vs.last_stock_check_date, vs.last_stock_check_by,
+                vs.last_stock_check_notes,
                 vs.updated_at,
                 -- Inventory summary from velocity cache
                 (SELECT COUNT(*) FROM product_velocity_cache pvc WHERE pvc.vendor = vs.vendor) AS total_skus,
@@ -202,6 +204,9 @@ def get_all_vendor_settings(db) -> List[Dict]:
                 'pricelist_coo_column': d.get('pricelist_coo_column'),
                 'po_reminder': d.get('po_reminder'),
                 'po_reminder_active': bool(d.get('po_reminder_active')) if d.get('po_reminder_active') is not None else True,
+                'last_stock_check_date': d['last_stock_check_date'].isoformat() if d.get('last_stock_check_date') else None,
+                'last_stock_check_by': d.get('last_stock_check_by'),
+                'last_stock_check_notes': d.get('last_stock_check_notes'),
                 'updated_at': d['updated_at'].isoformat() if d['updated_at'] else None,
                 'total_skus': d['total_skus'] or 0,
                 'inventory_value': round(_f(d['inventory_value']), 2),
@@ -230,6 +235,9 @@ def get_all_vendor_settings(db) -> List[Dict]:
                 'requires_barcode_labels': False,
                 'po_reminder': None,
                 'po_reminder_active': True,
+                'last_stock_check_date': None,
+                'last_stock_check_by': None,
+                'last_stock_check_notes': None,
                 'updated_at': None,
                 'total_skus': 0,
                 'inventory_value': 0,
@@ -239,6 +247,52 @@ def get_all_vendor_settings(db) -> List[Dict]:
 
         results.sort(key=lambda v: v['vendor'])
         return results
+    finally:
+        conn.close()
+
+
+def record_stock_check(db, vendor: str, check_date=None, by: str = None,
+                       notes: str = None, clear: bool = False) -> Dict:
+    """Record that this vendor's stock was physically counted.
+
+    Deliberately separate from upsert_vendor_settings: that one writes every
+    settings column, so routing stock checks through it would blank whatever
+    the caller happened not to send. This touches only the three columns.
+
+    check_date defaults to today (UTC). Pass clear=True to wipe the check
+    back to "never counted" — the undo for a mis-clicked ✓.
+
+    MERGE so a vendor that has no settings row yet still gets one.
+    """
+    from datetime import datetime, timezone
+    if clear:
+        check_date, by, notes = None, None, None
+    elif not check_date:
+        check_date = datetime.now(timezone.utc).date().isoformat()
+
+    conn = db._get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            MERGE vendor_settings AS target
+            USING (SELECT ? AS vendor) AS source
+            ON target.vendor = source.vendor
+            WHEN MATCHED THEN UPDATE SET
+                last_stock_check_date = ?, last_stock_check_by = ?,
+                last_stock_check_notes = ?, updated_at = GETUTCDATE()
+            WHEN NOT MATCHED THEN INSERT
+                (vendor, last_stock_check_date, last_stock_check_by,
+                 last_stock_check_notes)
+                VALUES (?, ?, ?, ?);
+        """,
+            vendor,
+            check_date, (by or None), (notes or None),
+            vendor, check_date, (by or None), (notes or None),
+        )
+        conn.commit()
+        return {'status': 'ok', 'vendor': vendor,
+                'last_stock_check_date': check_date,
+                'last_stock_check_by': by}
     finally:
         conn.close()
 

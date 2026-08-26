@@ -76,6 +76,23 @@ def normalize_sku(sku: str) -> str:
     return s
 
 
+BACKSLASH = chr(92)
+QUOTE = chr(34)
+
+
+def escape_search_term(value: str) -> str:
+    """Escape a value for interpolation into a quoted Shopify search term.
+
+    Shopify's search syntax uses double quotes to force an exact match, so a
+    SKU that itself contains a double quote (very common here -- 1.25", 2")
+    closes the quote early and the term silently matches nothing. Backslash
+    is escaped first so it cannot re-escape the quote we add.
+    """
+    if value is None:
+        return ""
+    return str(value).replace(BACKSLASH, BACKSLASH + BACKSLASH).replace(QUOTE, BACKSLASH + QUOTE)
+
+
 class ShopifyClient:
     """Async Shopify Admin GraphQL API client."""
 
@@ -664,12 +681,14 @@ class ShopifyClient:
             batch_lower = {s.lower(): s for s in batch}
             # Quote SKUs to force exact match — without quotes, Shopify tokenizes
             # on hyphens and special chars, causing partial/failed matches
-            sku_query = " OR ".join(f'sku:"{sku}"' for sku in batch)
+            sku_query = " OR ".join(
+                f'sku:"{escape_search_term(sku)}"' for sku in batch)
             # Also search with normalized versions in case Shopify has the ASCII form
             normalized_batch = [normalize_sku(s) for s in batch]
             extra_skus = [n for n in normalized_batch if n not in batch]
             if extra_skus:
-                sku_query += " OR " + " OR ".join(f'sku:"{sku}"' for sku in extra_skus)
+                sku_query += " OR " + " OR ".join(
+                    f'sku:"{escape_search_term(sku)}"' for sku in extra_skus)
 
             query = """
             query($query: String!) {
@@ -735,11 +754,13 @@ class ShopifyClient:
             batch = skus[i:i + 10]
             batch_lookup = {normalize_sku(s).lower(): s for s in batch}
             batch_lower = {s.lower(): s for s in batch}
-            sku_query = " OR ".join(f'sku:"{sku}"' for sku in batch)
+            sku_query = " OR ".join(
+                f'sku:"{escape_search_term(sku)}"' for sku in batch)
             normalized_batch = [normalize_sku(s) for s in batch]
             extra_skus = [n for n in normalized_batch if n not in batch]
             if extra_skus:
-                sku_query += " OR " + " OR ".join(f'sku:"{sku}"' for sku in extra_skus)
+                sku_query += " OR " + " OR ".join(
+                    f'sku:"{escape_search_term(sku)}"' for sku in extra_skus)
 
             query = """
             query($query: String!) {

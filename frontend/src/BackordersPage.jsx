@@ -4,6 +4,70 @@ import * as api from './api';
 const fmt = (n) => new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD', minimumFractionDigits: 2 }).format(n);
 const fmtNum = (n) => new Intl.NumberFormat('en-CA').format(n);
 
+
+// Dates of the open unfulfilled orders that put this SKU into backorder.
+// Each is a link straight to the order in Shopify admin — the usual next
+// step is to look at the customer, not just the date.
+function BackorderDates({ orders }) {
+  const list = Array.isArray(orders) ? orders : [];
+  if (!list.length) {
+    return (
+      <td style={{ padding: '12px', color: 'var(--text-muted)', fontSize: 12 }}
+          title="No open unfulfilled order currently holds this SKU — the negative stock may predate the current orders, or be a counting error.">
+        —
+      </td>
+    );
+  }
+
+  const fmtDate = (iso) => {
+    const d = new Date(iso);
+    if (isNaN(d)) return '?';
+    return d.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
+  };
+  const daysAgo = (iso) => {
+    const d = new Date(iso);
+    if (isNaN(d)) return null;
+    return Math.floor((Date.now() - d.getTime()) / 86400000);
+  };
+
+  const shown = list.slice(0, 3);
+  const rest = list.length - shown.length;
+
+  return (
+    <td style={{ padding: '12px', whiteSpace: 'nowrap', fontSize: 12 }}>
+      {shown.map((o, i) => {
+        const age = daysAgo(o.created_at);
+        // Anything waiting over a month is worth the eye-catch.
+        const colour = age != null && age >= 30 ? '#e74c3c'
+          : age != null && age >= 14 ? '#e67e22' : 'var(--green)';
+        return (
+          <div key={o.order_number + i}>
+            <a href={o.admin_url} target="_blank" rel="noopener noreferrer"
+               title={`${o.order_number} — ${o.qty} unit${o.qty === 1 ? '' : 's'} unfulfilled`
+                      + (age != null ? `, ${age} day${age === 1 ? '' : 's'} ago` : '')}
+               style={{ color: colour, textDecoration: 'none', fontWeight: 500 }}>
+              {fmtDate(o.created_at)}
+              <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
+                {' '}{o.order_number}
+              </span>
+              {o.qty > 1 && (
+                <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> ×{o.qty}</span>
+              )}
+            </a>
+          </div>
+        );
+      })}
+      {rest > 0 && (
+        <div style={{ color: 'var(--text-muted)' }}
+             title={list.slice(3).map(o => `${o.order_number} (${o.qty})`).join(', ')}>
+          +{rest} more
+        </div>
+      )}
+    </td>
+  );
+}
+
+
 export default function BackordersPage({ onToast, onNavigate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -259,6 +323,8 @@ export default function BackordersPage({ onToast, onNavigate }) {
                 <th onClick={() => handleSort('on_order')} style={{ padding: '10px 12px', textAlign: 'right', color: 'var(--text-light)', fontWeight: 500, cursor: 'pointer' }}>On order{sortArrow('on_order')}</th>
                 <th onClick={() => handleSort('net_position')} style={{ padding: '10px 12px', textAlign: 'right', color: 'var(--text-light)', fontWeight: 500, cursor: 'pointer' }}>Net position{sortArrow('net_position')}</th>
                 <th style={{ padding: '10px 12px', textAlign: 'right', color: 'var(--text-light)', fontWeight: 500 }}>Shortfall</th>
+                <th style={{ padding: '10px 12px', textAlign: 'left', color: 'var(--text-light)', fontWeight: 500 }}
+                    title="Open unfulfilled orders holding this SKU. Click a date to open the order in Shopify.">Ordered</th>
                 <th onClick={() => handleSort('price')} style={{ padding: '10px 12px', textAlign: 'right', color: 'var(--text-light)', fontWeight: 500, cursor: 'pointer' }}>Price{sortArrow('price')}</th>
                 <th onClick={() => handleSort('seasonal_monthly_velocity')} style={{ padding: '10px 12px', textAlign: 'right', color: 'var(--text-light)', fontWeight: 500, cursor: 'pointer' }}>Velocity/mo{sortArrow('seasonal_monthly_velocity')}</th>
                 <th onClick={() => handleSort('total_sold_365d')} style={{ padding: '10px 12px', textAlign: 'right', color: 'var(--text-light)', fontWeight: 500, cursor: 'pointer' }}>365d sales{sortArrow('total_sold_365d')}</th>
@@ -306,6 +372,7 @@ export default function BackordersPage({ onToast, onNavigate }) {
                         {shortfall}
                       </span>
                     </td>
+                    <BackorderDates orders={item.backorder_orders} />
                     <td style={{ padding: '12px', textAlign: 'right' }}>{fmt(item.price || 0)}</td>
                     <td style={{ padding: '12px', textAlign: 'right' }}>
                       {(item.seasonal_monthly_velocity || 0).toFixed(2)}

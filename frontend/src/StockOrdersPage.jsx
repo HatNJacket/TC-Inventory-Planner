@@ -239,10 +239,49 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
     setSaving(false);
   };
 
+  // Reverse a receive on one line. Units already pushed to Shopify are taken
+  // back out of Shopify too, so the confirmation says so plainly — this is
+  // not a local-only correction.
+  const [undoing, setUndoing] = useState(null);
+  const handleUndoReceive = async (item) => {
+    const received = item.received_qty || 0;
+    if (received <= 0) return;
+    const pushed = received - (item.unpushed_qty || 0);
+
+    let msg = `Undo receiving ${received} \u00d7 ${item.sku}?`;
+    if (pushed > 0) {
+      msg += `\n\n${pushed} unit${pushed === 1 ? ' has' : 's have'} already been `
+           + `pushed to Shopify, so Shopify stock will be reduced by ${pushed}.`;
+    } else {
+      msg += '\n\nNothing was pushed to Shopify for this line, so only the '
+           + 'purchase order is affected.';
+    }
+    if (!window.confirm(msg)) return;
+
+    setUndoing(item.id);
+    try {
+      const res = await api.undoReceive(orderId, item.id);
+      if (res.warning) onToast(res.warning, 'error');
+      else onToast(`Undid ${res.undone} \u00d7 ${res.sku}`
+        + (res.shopify_adjusted ? ` (Shopify \u2212${res.shopify_adjusted})` : ''));
+      if (res.order) setOrder(res.order); else fetchOrder();
+    } catch (err) {
+      onToast('Undo failed: ' + err.message, 'error');
+    }
+    setUndoing(null);
+  };
+
   // Stock update - passes the specific items that were just saved
-  const handleIncreaseStock = async () => {
+  const handleIncreaseStock = async (useOutstanding = false) => {
     setReviewLoading(true);
-    try { const data = await api.prepareStockUpdate(orderId, lastReceived); setReviewData(data); setShowStockModal(true); }
+    // Passing null makes the server offer everything received but never
+    // pushed — the recovery path after a refresh or a new batch wiped
+    // lastReceived out of memory.
+    try {
+      const data = await api.prepareStockUpdate(orderId, useOutstanding ? null : lastReceived);
+      setReviewData(data);
+      setShowStockModal(true);
+    }
     catch (err) { onToast('Failed: ' + err.message, 'error'); }
     setReviewLoading(false);
   };
@@ -522,6 +561,32 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
           )}
         </div>
       </div>
+      {/* Units recorded as received that never reached Shopify. This state
+          lives on the server, so it survives a refresh, navigating away, or
+          starting the next receive batch — the three ways a pending push
+          used to disappear without trace. */}
+      {(order.unpushed_qty || 0) > 0 && !editMode && (
+        <div style={{
+          margin: '0 24px 12px', padding: '12px 16px', borderRadius: 8,
+          backgroundColor: '#fef3c7', border: '1px solid #f59e0b',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+        }}>
+          <div style={{ fontSize: 13, color: '#92400e' }}>
+            <strong>{order.unpushed_qty} unit{order.unpushed_qty === 1 ? '' : 's'}</strong>
+            {' '}across {order.unpushed_lines} line{order.unpushed_lines === 1 ? '' : 's'}
+            {' '}received but <strong>not yet in Shopify</strong>.
+          </div>
+          <button onClick={() => handleIncreaseStock(true)} disabled={reviewLoading}
+            style={{
+              padding: '8px 18px', borderRadius: 6, border: 'none', whiteSpace: 'nowrap',
+              backgroundColor: '#f59e0b', color: '#fff', fontWeight: 700, fontSize: 12,
+              cursor: reviewLoading ? 'default' : 'pointer',
+            }}>
+            {reviewLoading ? 'Loading…' : 'Push to Shopify'}
+          </button>
+        </div>
+      )}
+
       {/* Receive items header. Waitlist top-up runs automatically on PO
           mount (see the useEffect on orderId) so there's no button here
           for it — operators don't have to remember to click anything. */}
@@ -684,10 +749,25 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
                   <td style={{ padding: '12px', textAlign: 'right' }}
                       title={receiptTooltip(item)}>
                     {editMode ? <input type="number" value={ev?.received_qty ?? item.received_qty} min={0} onChange={e => setEditValues(p => ({...p,[item.id]:{...p[item.id],received_qty:parseInt(e.target.value)||0}}))} style={{ width: 60, textAlign: 'right', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', fontSize: 13 }} /> : (
-                      <span style={{
-                        borderBottom: (item.receipts?.length > 0) ? '1px dotted var(--text-muted)' : 'none',
-                        cursor: (item.receipts?.length > 0) ? 'help' : 'default',
-                      }}>{item.received_qty}</span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+                        <span style={{
+                          borderBottom: (item.receipts?.length > 0) ? '1px dotted var(--text-muted)' : 'none',
+                          cursor: (item.receipts?.length > 0) ? 'help' : 'default',
+                        }}>{item.received_qty}</span>
+                        {(item.received_qty || 0) > 0 && order.status !== 'closed' && (
+                          <button
+                            onClick={() => handleUndoReceive(item)}
+                            disabled={undoing === item.id}
+                            title={`Undo receiving ${item.received_qty} \u00d7 ${item.sku}`}
+                            style={{
+                              border: '1px solid var(--border)', borderRadius: 4,
+                              background: 'var(--white)', color: 'var(--text-muted)',
+                              fontSize: 11, lineHeight: 1.3, padding: '1px 5px',
+                              cursor: undoing === item.id ? 'default' : 'pointer',
+                              opacity: undoing === item.id ? 0.5 : 1,
+                            }}>\u21b6</button>
+                        )}
+                      </span>
                     )}
                   </td>
                   <td style={{ padding: '12px', textAlign: 'right', fontWeight: 600 }}>
