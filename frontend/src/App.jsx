@@ -204,12 +204,20 @@ function Sidebar({ currentPage, onNavigate, currentUser }) {
 // ─── TOAST NOTIFICATIONS ────────────────────────────────────────
 
 function Toast({ message, type = 'success', onClose }) {
+  // Warnings deserve reading time (Nick, 2026-08-31: the held-for-a-bin
+  // notice vanished before he could read it): errors stay 20s instead
+  // of 4s, and any toast dismisses on click.
   useEffect(() => {
-    const timer = setTimeout(onClose, 4000);
+    const timer = setTimeout(onClose, type === 'error' ? 20000 : 4000);
     return () => clearTimeout(timer);
-  }, [onClose]);
+  }, [onClose, type]);
 
-  return <div className={`toast ${type}`}>{message}</div>;
+  return (
+    <div className={`toast ${type}`} onClick={onClose}
+      style={{ cursor: 'pointer' }} title="Click to dismiss">
+      {message}
+    </div>
+  );
 }
 
 // ─── REPLENISHMENT PAGE ─────────────────────────────────────────
