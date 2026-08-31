@@ -1285,6 +1285,26 @@ export default function App() {
   // attributed to this user server-side).
   const [currentUser, setCurrentUser] = useState(null);
 
+  // Deep link from the RFID app's shipment sort (2026-08-31):
+  // "#receive=<base64url {order_id, items:[{sku, qty}]}>" opens that
+  // stock order with the To-receive counts pre-filled - NOTHING saves
+  // until the user presses Save. The hash is stripped immediately; the
+  // payload survives the login screen in state.
+  const [prefillReceive, setPrefillReceive] = useState(null);
+  useEffect(() => {
+    const m = /[#&]receive=([A-Za-z0-9_-]+)/.exec(window.location.hash || '');
+    if (!m) return;
+    try {
+      const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+      const payload = JSON.parse(decodeURIComponent(escape(atob(b64))));
+      if (payload && payload.order_id && Array.isArray(payload.items)) {
+        setPrefillReceive(payload);
+        setCurrentPage('stockorders');
+      }
+    } catch (e) { /* malformed link - ignore */ }
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  }, []);
+
   useEffect(() => {
     if (!authenticated) { setCurrentUser(null); return; }
     api.whoami().then(r => setCurrentUser(r?.user || null)).catch(() => setCurrentUser(null));
@@ -1315,7 +1335,7 @@ export default function App() {
       case 'replenishment':
         return <ReplenishmentPage onToast={showToast} onNavigate={navigate} />;
       case 'stockorders':
-        return <StockOrdersPage onToast={showToast} resetSignal={stockOrdersResetSignal} />;
+        return <StockOrdersPage onToast={showToast} resetSignal={stockOrdersResetSignal} prefillReceive={prefillReceive} onPrefillConsumed={() => setPrefillReceive(null)} />;
       case 'backorders':
         return <BackordersPage onToast={showToast} onNavigate={navigate} />;
       case 'intelligence':

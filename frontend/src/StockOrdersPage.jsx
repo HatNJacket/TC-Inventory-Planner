@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import * as api from './api';
 import { queueLabelJobs, buildLabelJobsFromReceive } from './labelPrinter';
 
@@ -109,7 +109,7 @@ function StockUpdateModal({ reviewData, onApply, onCancel, applying, onPrint, pr
 }
 
 // Order Detail View
-function StockOrderDetail({ orderId, onBack, onToast }) {
+function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed }) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editMode, setEditMode] = useState(false);
@@ -202,6 +202,45 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
   // Receive
   const fillToReceive = (id, remaining) => { setToReceive(p => ({ ...p, [id]: remaining })); setHasPendingReceives(true); setLastReceived(null); };
   const updateToReceive = (id, val) => { const q = Math.max(0, parseInt(val) || 0); setToReceive(p => ({ ...p, [id]: q })); setHasPendingReceives(Object.values({ ...toReceive, [id]: q }).some(v => v > 0)); setLastReceived(null); };
+
+  // Deep-link prefill from the RFID shipment sort (2026-08-31): once
+  // the order loads, the payload's counts land in To-receive - capped
+  // at each line's Remaining, matched by SKU - and a toast says what
+  // applied, what was capped, and what isn't on this order. One-shot;
+  // NOTHING saves until the user presses Save.
+  const prefillApplied = useRef(false);
+  useEffect(() => {
+    if (!prefill || !order || prefillApplied.current) return;
+    if (order.id !== prefill.order_id) return;
+    prefillApplied.current = true;
+    let applied = 0;
+    const capped = [];
+    const missing = [];
+    const next = {};
+    for (const it of (prefill.items || [])) {
+      const want = parseInt(it.qty) || 0;
+      if (want <= 0) continue;
+      const line = (order.items || []).find(l =>
+        (l.sku || '').trim().toUpperCase() === String(it.sku || '').trim().toUpperCase());
+      if (!line) { missing.push(it.sku); continue; }
+      const remaining = Math.max(0, (line.ordered_qty || 0) - (line.received_qty || 0));
+      const qty = Math.min(want, remaining);
+      if (qty < want) capped.push(it.sku);
+      if (qty > 0) { next[line.id] = qty; applied += qty; }
+    }
+    if (Object.keys(next).length) {
+      setToReceive(p => ({ ...p, ...next }));
+      setHasPendingReceives(true);
+      setLastReceived(null);
+    }
+    onToast(
+      `Pre-filled ${applied} unit(s) from the RFID shipment sort - review, then Save.`
+      + (capped.length ? ` Capped at Remaining: ${capped.slice(0, 3).join(', ')}${capped.length > 3 ? '...' : ''}.` : '')
+      + (missing.length ? ` Not on this order: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? '...' : ''}.` : ''),
+      (capped.length || missing.length) ? 'error' : 'success',
+    );
+    if (onPrefillConsumed) onPrefillConsumed();
+  }, [prefill, order, onToast, onPrefillConsumed]);
 
   // Scan-to-receive (Nick, 2026-08-31): a barcode (or SKU) scanned into
   // the header box bumps that line's To-receive by 1 - mechanically the
@@ -1183,7 +1222,7 @@ function AddItemModal({ orderId, orderVendor, onClose, onAdded, onToast }) {
 
 
 // Stock Orders List
-export default function StockOrdersPage({ onToast, resetSignal }) {
+export default function StockOrdersPage({ onToast, resetSignal, prefillReceive, onPrefillConsumed }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('open');
@@ -1297,7 +1336,14 @@ export default function StockOrdersPage({ onToast, resetSignal }) {
   });
   const vendors = useMemo(() => [...new Set(orders.map(o => o.vendor).filter(Boolean))].sort(), [orders]);
 
-  if (selectedOrderId) return <StockOrderDetail orderId={selectedOrderId} onBack={() => { setSelectedOrderId(null); fetchOrders(); }} onToast={onToast} />;
+  // The RFID shipment sort's deep link lands straight on its order.
+  useEffect(() => {
+    if (prefillReceive && prefillReceive.order_id) {
+      setSelectedOrderId(prefillReceive.order_id);
+    }
+  }, [prefillReceive]);
+
+  if (selectedOrderId) return <StockOrderDetail orderId={selectedOrderId} onBack={() => { setSelectedOrderId(null); fetchOrders(); }} onToast={onToast} prefill={prefillReceive && prefillReceive.order_id === selectedOrderId ? prefillReceive : null} onPrefillConsumed={onPrefillConsumed} />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
