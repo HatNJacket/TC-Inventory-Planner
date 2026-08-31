@@ -202,6 +202,28 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
   // Receive
   const fillToReceive = (id, remaining) => { setToReceive(p => ({ ...p, [id]: remaining })); setHasPendingReceives(true); setLastReceived(null); };
   const updateToReceive = (id, val) => { const q = Math.max(0, parseInt(val) || 0); setToReceive(p => ({ ...p, [id]: q })); setHasPendingReceives(Object.values({ ...toReceive, [id]: q }).some(v => v > 0)); setLastReceived(null); };
+
+  // Scan-to-receive (Nick, 2026-08-31): a barcode (or SKU) scanned into
+  // the header box bumps that line's To-receive by 1 - mechanically the
+  // same as its input's increment arrow, capped at Remaining. Nothing
+  // saves until the normal Save button.
+  const [scanDraft, setScanDraft] = useState('');
+  const handleScanReceive = () => {
+    const code = scanDraft.trim();
+    setScanDraft('');
+    if (!code) return;
+    const norm = code.toUpperCase();
+    const item = (order?.items || []).find(i =>
+      (i.sku || '').trim().toUpperCase() === norm ||
+      (i.barcode || '').trim().toUpperCase() === norm);
+    if (!item) { onToast(`${code} is not on this stock order`, 'error'); return; }
+    const remaining = (item.ordered_qty || 0) - (item.received_qty || 0);
+    const current = toReceive[item.id] || 0;
+    if (remaining <= 0) { onToast(`${item.sku}: already fully received`, 'error'); return; }
+    if (current >= remaining) { onToast(`${item.sku}: to-receive is already at the remaining ${remaining}`, 'error'); return; }
+    updateToReceive(item.id, current + 1);
+    onToast(`${item.sku}: to receive ${current + 1} of ${remaining}`);
+  };
   const fillAllRemaining = () => { const r = {}; (order?.items || []).forEach(i => { const rem = (i.ordered_qty||0) - (i.received_qty||0); if (rem > 0) r[i.id] = rem; }); setToReceive(r); setHasPendingReceives(Object.values(r).some(v => v > 0)); setLastReceived(null); };
   const discardReceives = () => { setToReceive({}); setHasPendingReceives(false); setLastReceived(null); };
 
@@ -659,7 +681,18 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
           for it — operators don't have to remember to click anything. */}
       <div style={{ padding: '12px 24px', backgroundColor: 'var(--white)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)' }}>
         <h3 style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>Receive items</h3>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {!editMode && order.status !== 'closed' && (
+            <input
+              type="text"
+              value={scanDraft}
+              onChange={e => setScanDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleScanReceive(); }}
+              placeholder="Scan to receive +1"
+              title="Scan (or type) a SKU or barcode and press Enter - bumps that line's To receive by 1, exactly like its increment arrow, capped at Remaining. Nothing changes until Save."
+              style={{ width: '20ch', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
+            />
+          )}
           {order.status !== 'closed' && (
             <button onClick={() => setShowAddItem(true)}
               title="Add a line item to this purchase order"
