@@ -210,10 +210,17 @@ export async function prepareStockUpdate(orderId, items = null) {
   });
 }
 
-export async function applyStockUpdate(orderId, locationId, items) {
+// unprintedItemIds: line-item ids in this update that never had RFID
+// labels printed - the backend books them into the RFID app's receiving
+// batch WITHOUT labels and files the safety-net Review task there.
+export async function applyStockUpdate(orderId, locationId, items, unprintedItemIds = []) {
   return apiFetch(`/stock-orders/${orderId}/apply-stock-update`, {
     method: 'POST',
-    body: JSON.stringify({ location_id: locationId, items }),
+    body: JSON.stringify({
+      location_id: locationId,
+      items,
+      unprinted_item_ids: unprintedItemIds,
+    }),
   });
 }
 

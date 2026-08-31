@@ -1551,12 +1551,19 @@ class StockUpdateItem(BaseModel):
 class ApplyStockUpdateRequest(BaseModel):
     location_id: str
     items: List[StockUpdateItem]
+    # Line-item ids in this update that never had RFID labels printed
+    # (the stock-update window tracks its own Print-labels presses,
+    # 2026-08-26). Pushed-without-labels lines are relayed to the RFID
+    # app, which books them into the receiving batch WITHOUT labels and
+    # files one safety-net Review task; resolving it queues the labels.
+    unprinted_item_ids: List[int] = []
 
 
 @app.post("/api/stock-orders/{order_id}/apply-stock-update")
 async def apply_stock_update(
     order_id: int, request: ApplyStockUpdateRequest,
     token: str = Depends(verify_token),
+    user: str = Depends(current_user),
 ):
     """
     Apply stock updates to Shopify and record receives in our database.
@@ -1651,6 +1658,60 @@ async def apply_stock_update(
         except Exception as e:
             logger.warning(f"Could not sync cached stock after receive: {e}")
 
+        # RFID safety net (2026-08-26): lines pushed to Shopify WITHOUT
+        # RFID labels book into the RFID app's receiving batch label-less
+        # and file one Review task over there; resolving it queues the
+        # labels (mechanically identical to Print labels). Best effort -
+        # a bridge outage must never fail the stock push itself.
+        rfid_safety_net = None
+        try:
+            if request.unprinted_item_ids and config.RFID_STATION_KEY:
+                unprinted_ids = set(request.unprinted_item_ids)
+                order = db.get_stock_order(order_id) or {}
+                by_id = {
+                    it.get("id"): it for it in (order.get("items") or [])
+                }
+                rfid_items = []
+                for item in request.items:
+                    if (item.item_id in unprinted_ids
+                            and item.adjustment > 0
+                            and item.sku in pushed_by_sku):
+                        line = by_id.get(item.item_id) or {}
+                        rfid_items.append({
+                            "sku": item.sku,
+                            "quantity": int(item.adjustment),
+                            "barcode": line.get("barcode") or None,
+                        })
+                if rfid_items:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        resp = await client.post(
+                            f"{config.RFID_APP_URL.rstrip('/')}"
+                            f"/api/receiving/unprinted",
+                            json={
+                                "items": rfid_items,
+                                "requested_by": user,
+                                # Same reference as rfid-labels so both
+                                # paths land on ONE receiving batch.
+                                "reference": (
+                                    f"SO {order_id}"
+                                    + (f" · {order.get('vendor')}"
+                                       if order.get("vendor") else "")
+                                )[:60],
+                            },
+                            headers={
+                                "X-Station-Key": config.RFID_STATION_KEY,
+                            },
+                        )
+                    if resp.status_code < 400:
+                        rfid_safety_net = resp.json()
+                    else:
+                        logger.warning(
+                            "RFID safety net refused: %s", resp.text[:200]
+                        )
+        except Exception as e:
+            logger.warning(f"RFID safety net relay failed: {e}")
+
         # Build response
         success_count = sum(1 for r in shopify_results if r.get("success"))
         error_count = sum(1 for r in shopify_results if not r.get("success"))
@@ -1661,6 +1722,7 @@ async def apply_stock_update(
             "success_count": success_count,
             "error_count": error_count,
             "total_items": len(request.items),
+            "rfid_safety_net": rfid_safety_net,
             "message": f"Updated {success_count} items in Shopify"
             + (f", {error_count} errors" if error_count else ""),
         }

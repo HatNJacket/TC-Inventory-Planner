@@ -44,11 +44,17 @@ const StatusBadge = ({ status }) => {
 };
 
 // Stock Update Modal - matches Inventory Planner's "Update stock in Telescopes Canada Warehouse"
-function StockUpdateModal({ reviewData, onApply, onCancel, applying }) {
+function StockUpdateModal({ reviewData, onApply, onCancel, applying, onPrint, printing, printedIds }) {
   const [selected, setSelected] = useState(new Set());
   useEffect(() => { if (reviewData?.items) setSelected(new Set(reviewData.items.map(i => i.item_id))); }, [reviewData]);
   if (!reviewData) return null;
   const toggleAll = () => { selected.size === reviewData.items.length ? setSelected(new Set()) : setSelected(new Set(reviewData.items.map(i => i.item_id))); };
+  const selectedItems = reviewData.items.filter(i => selected.has(i.item_id));
+  // RFID labels live in this window now (2026-08-26): print for the
+  // checked lines, then update stock. Updating lines that never got
+  // labels is allowed - the RFID app files its safety-net Review task
+  // for them - but the button shows what's covered.
+  const allPrinted = selectedItems.length > 0 && selectedItems.every(i => printedIds?.has(i.item_id));
   return (
     <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
       <div style={{ backgroundColor: '#fff', borderRadius: 12, width: '90%', maxWidth: 850, maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
@@ -83,12 +89,19 @@ function StockUpdateModal({ reviewData, onApply, onCancel, applying }) {
             </tr></tfoot>
           </table>
         </div>
-        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--border)', display: 'flex', gap: 12 }}>
-          <button onClick={() => onApply(reviewData.items.filter(i => selected.has(i.item_id)))} disabled={applying || selected.size === 0}
+        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--border)', display: 'flex', gap: 12, alignItems: 'center' }}>
+          <button onClick={() => onApply(selectedItems)} disabled={applying || selected.size === 0}
             style={{ padding: '10px 24px', borderRadius: 8, border: 'none', backgroundColor: '#1a7e5a', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer', opacity: applying ? 0.7 : 1 }}>
             {applying ? 'Updating...' : 'Update stock'}
           </button>
           <button onClick={onCancel} disabled={applying} style={{ padding: '10px 20px', borderRadius: 8, border: '1px solid var(--border)', backgroundColor: 'transparent', fontSize: 14, cursor: 'pointer', fontWeight: 500 }}>Cancel</button>
+          <button
+            onClick={() => onPrint(selectedItems)}
+            disabled={printing || applying || selected.size === 0 || allPrinted}
+            title="Queue one RFID label per unit for the checked lines on the warehouse Zebra (via the RFID Stickers app). Each label prints the product's home bin; pair the tags in the RFID app's Batch tagging. Updating stock without printing files a reminder task in the RFID app instead."
+            style={{ marginLeft: 'auto', padding: '10px 24px', borderRadius: 8, border: 'none', backgroundColor: allPrinted ? '#7f8c8d' : '#2980b9', color: '#fff', fontWeight: 700, fontSize: 14, cursor: allPrinted ? 'default' : 'pointer', opacity: printing ? 0.7 : 1 }}>
+            {printing ? 'Queueing...' : allPrinted ? 'Labels printed ✓' : 'Print labels'}
+          </button>
         </div>
       </div>
     </div>
@@ -277,12 +290,24 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
   // printed with the product's home bin). Separate from the barcode
   // label agent above and from the Shopify stock update.
   const [printingRfid, setPrintingRfid] = useState(false);
-  const handlePrintRfidLabels = async () => {
-    if (!lastReceived || !lastReceived.length) return;
+  // Line-item ids whose RFID labels were queued from the CURRENT stock
+  // update window - lines updated without a print are relayed to the
+  // RFID app as its safety-net Review task (2026-08-26).
+  const [rfidPrintedIds, setRfidPrintedIds] = useState(new Set());
+  const handlePrintRfidLabels = async (selectedItems) => {
+    if (!selectedItems || !selectedItems.length) return;
     setPrintingRfid(true);
     try {
-      const res = await api.sendRfidLabels(orderId, lastReceived);
+      const res = await api.sendRfidLabels(
+        orderId,
+        selectedItems.map(i => ({ item_id: i.item_id, received_qty: i.adjustment })),
+      );
       onToast(res.message || `${res.queued} RFID label(s) queued`);
+      setRfidPrintedIds(prev => {
+        const n = new Set(prev);
+        selectedItems.forEach(i => n.add(i.item_id));
+        return n;
+      });
       const problems = [
         ...(res.skipped_unknown || []),
         ...(res.skipped_no_sku || []),
@@ -314,6 +339,7 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
     try {
       const data = await api.prepareStockUpdate(orderId, useOutstanding ? null : lastReceived);
       setReviewData(data);
+      setRfidPrintedIds(new Set()); // fresh window, fresh label ledger
       setShowStockModal(true);
     }
     catch (err) { onToast('Failed: ' + err.message, 'error'); }
@@ -322,8 +348,15 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
   const handleApplyStockUpdate = async (selectedItems) => {
     setApplying(true);
     try {
-      const result = await api.applyStockUpdate(orderId, reviewData.location_id, selectedItems.map(i => ({ item_id: i.item_id, sku: i.sku, adjustment: i.adjustment, inventory_item_id: i.inventory_item_id })));
-      onToast(result.message); setShowStockModal(false); setReviewData(null); setLastReceived(null); fetchOrder();
+      // Lines updated without a label print ride along so the RFID app
+      // can file its safety-net Review task for them.
+      const unprinted = selectedItems
+        .filter(i => !rfidPrintedIds.has(i.item_id))
+        .map(i => i.item_id);
+      const result = await api.applyStockUpdate(orderId, reviewData.location_id, selectedItems.map(i => ({ item_id: i.item_id, sku: i.sku, adjustment: i.adjustment, inventory_item_id: i.inventory_item_id })), unprinted);
+      onToast(result.message);
+      if (result.rfid_safety_net?.message) onToast(result.rfid_safety_net.message);
+      setShowStockModal(false); setReviewData(null); setLastReceived(null); fetchOrder();
     } catch (err) { onToast('Failed: ' + err.message, 'error'); }
     setApplying(false);
   };
@@ -912,19 +945,12 @@ function StockOrderDetail({ orderId, onBack, onToast }) {
         {!editMode && !hasPendingReceives && (<>
           <button onClick={onBack} style={{ padding: '10px 24px', borderRadius: 6, border: '1px solid var(--border)', backgroundColor: 'transparent', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>Back to stock orders</button>
           {lastReceived && lastReceived.length > 0 && <button onClick={handleIncreaseStock} disabled={reviewLoading} style={{ padding: '10px 24px', borderRadius: 6, border: 'none', backgroundColor: 'var(--green)', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>{reviewLoading ? 'Loading...' : 'Increase stock in Shopify'}</button>}
-          {lastReceived && lastReceived.length > 0 && (
-            <button
-              onClick={handlePrintRfidLabels}
-              disabled={printingRfid}
-              title="Queue one RFID label per received unit on the warehouse Zebra (via the RFID Stickers app). Each label prints the product's home bin; pair the tags in the RFID app's Batch tagging."
-              style={{ marginLeft: 'auto', padding: '10px 24px', borderRadius: 6, border: 'none', backgroundColor: '#2980b9', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}
-            >
-              {printingRfid ? 'Queueing...' : 'Print labels'}
-            </button>
-          )}
+          {/* Print labels moved INTO the stock-update window (2026-08-26):
+              printing belongs to the same review step as the push, and
+              the window knows which lines got labels. */}
         </>)}
       </div>
-      {showStockModal && <StockUpdateModal reviewData={reviewData} onApply={handleApplyStockUpdate} onCancel={() => { setShowStockModal(false); setReviewData(null); }} applying={applying} />}
+      {showStockModal && <StockUpdateModal reviewData={reviewData} onApply={handleApplyStockUpdate} onCancel={() => { setShowStockModal(false); setReviewData(null); }} applying={applying} onPrint={handlePrintRfidLabels} printing={printingRfid} printedIds={rfidPrintedIds} />}
       {showAddItem && (
         <AddItemModal
           orderId={orderId}
