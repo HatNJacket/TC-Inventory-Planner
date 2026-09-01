@@ -415,8 +415,11 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
     setApplying(true);
     try {
       // Lines updated without a label print ride along so the RFID app
-      // can file its safety-net Review task for them.
-      const unprinted = selectedItems
+      // can file its safety-net Review task for them. An order received
+      // via the RFID app's "Receive entire shipment" (2026-09-01)
+      // already printed and paired everything - nothing is unprinted,
+      // whatever this window's local ledger says.
+      const unprinted = (order?.rfid_labels_printed ? [] : selectedItems)
         .filter(i => !rfidPrintedIds.has(i.item_id))
         .map(i => i.item_id);
       const result = await api.applyStockUpdate(orderId, reviewData.location_id, selectedItems.map(i => ({ item_id: i.item_id, sku: i.sku, adjustment: i.adjustment, inventory_item_id: i.inventory_item_id })), unprinted);
