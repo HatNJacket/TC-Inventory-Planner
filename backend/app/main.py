@@ -760,6 +760,28 @@ async def get_stock_order(order_id: int, token: str = Depends(verify_token)):
             for item in order['items']:
                 item['bin'] = bin_map.get(item.get('sku'), '')
 
+    # Full-shipment receive flag (2026-09-01): when the RFID app already
+    # printed AND paired this order's labels via "Receive entire
+    # shipment", the Print labels button grays out here - the labels are
+    # on the boxes. Best effort with a short timeout; the PO must load
+    # even with the RFID app down.
+    order['rfid_labels_printed'] = False
+    try:
+        if config.RFID_STATION_KEY:
+            import httpx
+            async with httpx.AsyncClient(timeout=4) as client:
+                resp = await client.get(
+                    f"{config.RFID_APP_URL.rstrip('/')}"
+                    f"/api/receiving/order-status/{order_id}",
+                    headers={"X-Station-Key": config.RFID_STATION_KEY},
+                )
+            if resp.status_code < 400:
+                order['rfid_labels_printed'] = bool(
+                    resp.json().get('printed')
+                )
+    except Exception as e:
+        logger.warning(f"RFID order-status check failed: {e}")
+
     return order
 
 
@@ -1711,6 +1733,27 @@ async def apply_stock_update(
                         )
         except Exception as e:
             logger.warning(f"RFID safety net relay failed: {e}")
+
+        # Full-shipment watchdog ping (2026-09-01): tell the RFID app
+        # this order's Shopify stock was updated - it stamps the order
+        # receipt and auto-closes the "stock not updated" Review task
+        # its 1-hour clock may have filed. Best effort, never fails the
+        # push.
+        try:
+            if config.RFID_STATION_KEY:
+                import httpx
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(
+                        f"{config.RFID_APP_URL.rstrip('/')}"
+                        f"/api/receiving/stock-updated",
+                        json={"stock_order_id": order_id,
+                              "updated_by": user},
+                        headers={
+                            "X-Station-Key": config.RFID_STATION_KEY,
+                        },
+                    )
+        except Exception as e:
+            logger.warning(f"RFID stock-updated ping failed: {e}")
 
         # Build response
         success_count = sum(1 for r in shopify_results if r.get("success"))

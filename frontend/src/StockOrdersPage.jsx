@@ -44,7 +44,7 @@ const StatusBadge = ({ status }) => {
 };
 
 // Stock Update Modal - matches Inventory Planner's "Update stock in Telescopes Canada Warehouse"
-function StockUpdateModal({ reviewData, onApply, onCancel, applying, onPrint, printing, printedIds }) {
+function StockUpdateModal({ reviewData, onApply, onCancel, applying, onPrint, printing, printedIds, rfidPrinted }) {
   const [selected, setSelected] = useState(new Set());
   useEffect(() => { if (reviewData?.items) setSelected(new Set(reviewData.items.map(i => i.item_id))); }, [reviewData]);
   if (!reviewData) return null;
@@ -54,7 +54,10 @@ function StockUpdateModal({ reviewData, onApply, onCancel, applying, onPrint, pr
   // checked lines, then update stock. Updating lines that never got
   // labels is allowed - the RFID app files its safety-net Review task
   // for them - but the button shows what's covered.
-  const allPrinted = selectedItems.length > 0 && selectedItems.every(i => printedIds?.has(i.item_id));
+  // rfidPrinted (2026-09-01): this order came through the RFID app's
+  // "Receive entire shipment" - every label already printed and paired
+  // over there, so Print labels stays gray for the whole order.
+  const allPrinted = rfidPrinted || (selectedItems.length > 0 && selectedItems.every(i => printedIds?.has(i.item_id)));
   return (
     <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
       <div style={{ backgroundColor: '#fff', borderRadius: 12, width: '90%', maxWidth: 850, maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
@@ -98,7 +101,9 @@ function StockUpdateModal({ reviewData, onApply, onCancel, applying, onPrint, pr
           <button
             onClick={() => onPrint(selectedItems)}
             disabled={printing || applying || selected.size === 0 || allPrinted}
-            title="Queue one RFID label per unit for the checked lines on the warehouse Zebra (via the RFID Stickers app). Each label prints the product's home bin; pair the tags in the RFID app's Batch tagging. Updating stock without printing files a reminder task in the RFID app instead."
+            title={rfidPrinted
+              ? "This order's labels were already printed and paired through the RFID app's Receive entire shipment - nothing to print here."
+              : "Queue one RFID label per unit for the checked lines on the warehouse Zebra (via the RFID Stickers app). Each label prints the product's home bin; pair the tags in the RFID app's Batch tagging. Updating stock without printing files a reminder task in the RFID app instead."}
             style={{ marginLeft: 'auto', padding: '10px 24px', borderRadius: 8, border: 'none', backgroundColor: allPrinted ? '#7f8c8d' : '#2980b9', color: '#fff', fontWeight: 700, fontSize: 14, cursor: allPrinted ? 'default' : 'pointer', opacity: printing ? 0.7 : 1 }}>
             {printing ? 'Queueing...' : allPrinted ? 'Labels printed ✓' : 'Print labels'}
           </button>
@@ -1022,7 +1027,7 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
               the window knows which lines got labels. */}
         </>)}
       </div>
-      {showStockModal && <StockUpdateModal reviewData={reviewData} onApply={handleApplyStockUpdate} onCancel={() => { setShowStockModal(false); setReviewData(null); }} applying={applying} onPrint={handlePrintRfidLabels} printing={printingRfid} printedIds={rfidPrintedIds} />}
+      {showStockModal && <StockUpdateModal reviewData={reviewData} onApply={handleApplyStockUpdate} onCancel={() => { setShowStockModal(false); setReviewData(null); }} applying={applying} onPrint={handlePrintRfidLabels} printing={printingRfid} printedIds={rfidPrintedIds} rfidPrinted={!!order?.rfid_labels_printed} />}
       {showAddItem && (
         <AddItemModal
           orderId={orderId}
