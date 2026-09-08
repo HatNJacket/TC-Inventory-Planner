@@ -6141,11 +6141,22 @@ if static_dir.exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        """Serve React SPA for any non-API route."""
+        """Serve React SPA for any non-API route.
+
+        index.html is served no-cache (2026-09-08): browsers were
+        keeping a stale copy that referenced an OLD hashed bundle, so
+        deploys - including the #receive= deep-link handler - never
+        reached users without a hard refresh. The hashed /assets files
+        stay cacheable; the html that names them must always
+        revalidate."""
+        no_cache = {"Cache-Control": "no-cache, must-revalidate"}
         file_path = static_dir / full_path
         if file_path.exists() and file_path.is_file():
+            if file_path.name == "index.html":
+                return FileResponse(str(file_path), headers=no_cache)
             return FileResponse(str(file_path))
-        return FileResponse(str(static_dir / "index.html"))
+        return FileResponse(str(static_dir / "index.html"),
+                            headers=no_cache)
 
 
 # ─── RUN ─────────────────────────────────────────────────────────
