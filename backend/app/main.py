@@ -1430,9 +1430,11 @@ async def send_rfid_labels(
                 json={
                     "items": rfid_items,
                     "requested_by": user,
-                    # The RFID side caps reference at 60 chars.
+                    # The RFID side caps reference at 60 chars. The
+                    # HUMAN reference number, never the internal id
+                    # (2026-09-08: batches read "SO 1268" for SO 945).
                     "reference": (
-                        f"SO {order_id}"
+                        f"SO {order.get('reference_number') or order_id}"
                         + (f" · {order.get('vendor')}"
                            if order.get("vendor") else "")
                     )[:60],
@@ -1714,9 +1716,10 @@ async def apply_stock_update(
                                 "items": rfid_items,
                                 "requested_by": user,
                                 # Same reference as rfid-labels so both
-                                # paths land on ONE receiving batch.
+                                # paths land on ONE receiving batch -
+                                # the HUMAN reference number (2026-09-08).
                                 "reference": (
-                                    f"SO {order_id}"
+                                    f"SO {order.get('reference_number') or order_id}"
                                     + (f" · {order.get('vendor')}"
                                        if order.get("vendor") else "")
                                 )[:60],
