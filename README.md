@@ -44,13 +44,33 @@ generates replenishment recommendations using seasonal sales velocity.
 
 ## Local Development
 
-### Prerequisites
-- Python 3.11+
-- ODBC Driver 18 for SQL Server
-- Node.js 18+ (for frontend build)
-- Shopify Admin API access token
+### Quick start (Windows)
 
-### Backend Setup
+One-time installs (any Python 3.11 or newer works, including 3.13/3.14):
+
+```
+winget install --id Python.Python.3.13 -e
+winget install --id Microsoft.msodbcsql.18 -e
+winget install --id OpenJS.NodeJS.LTS -e
+```
+
+Then double-click `run-local.bat` (or run `py run_local.py`). The first
+run creates `backend\.env` from the template and stops. Fill in the real
+values (Azure portal → App Services → tc-planner-app → Settings →
+Environment variables) and run it again. It sets up `backend\.venv`,
+builds the web page, and serves everything at http://localhost:8000
+(API docs at http://localhost:8000/docs).
+
+- `py run_local.py --lan` lets other PCs on the network connect.
+- **Your local copy uses the LIVE database and Shopify store.** Saving
+  a stock order locally changes real data. Leave `RFID_STATION_KEY`
+  blank unless you mean to send label jobs to the live RFID app.
+- If the database won't connect, the Azure SQL firewall may be blocking
+  your IP: add it on the SQL server's Networking page in the portal.
+- For live frontend editing, run `npm run dev` in `frontend/` alongside
+  the backend and open http://localhost:3000.
+
+### Manual backend setup
 
 ```bash
 cd backend

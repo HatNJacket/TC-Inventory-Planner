@@ -155,9 +155,27 @@ class Config:
         return f"https://{self.SHOPIFY_STORE}.myshopify.com/admin/api/{self.SHOPIFY_API_VERSION}/graphql.json"
 
     @property
+    def azure_sql_driver(self) -> str:
+        """ODBC driver name. The container always has Driver 18; local
+        Windows machines may only have 17, so fall back to it when 18 is
+        missing. AZURE_SQL_DRIVER in .env overrides both."""
+        override = os.getenv("AZURE_SQL_DRIVER", "").strip()
+        if override:
+            return override
+        try:
+            import pyodbc
+            installed = set(pyodbc.drivers())
+        except Exception:
+            installed = set()
+        for name in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server"):
+            if name in installed:
+                return name
+        return "ODBC Driver 18 for SQL Server"
+
+    @property
     def azure_sql_connection_string(self) -> str:
         return (
-            f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+            f"DRIVER={{{self.azure_sql_driver}}};"
             f"SERVER={self.AZURE_SQL_SERVER};"
             f"DATABASE={self.AZURE_SQL_DATABASE};"
             f"UID={self.AZURE_SQL_USER};"
