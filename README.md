@@ -51,14 +51,12 @@ Double-click `run-local.bat`. That's it. On the first run it:
 1. Installs Python (if missing), ODBC Driver 18 for SQL Server and
    Node.js LTS with winget. Windows asks for permission once; running it
    accepts those installers' licence terms.
-2. Writes `backend\.env` automatically, from either:
-   - **`setup_env.py`** - a gitignored file with the live settings built
-     in. Someone with Azure access makes it with
-     `py run_local.py --make-setup-script` and hands it over privately
-     (it holds live secrets: never commit it or post it in a group
-     chat). Drop it next to `run_local.py`.
-   - **the Azure CLI** - if you're signed in (`az login`) with access to
-     tc-planner-app, the settings are pulled straight from it.
+2. Writes `backend\.env` automatically. Normally it installs the Azure
+   CLI, opens a browser to sign you in to Azure, and copies the live
+   tc-planner-app settings (your account needs access - see "Azure
+   access" below). Alternatively, a gitignored **`setup_env.py`** with
+   the settings built in (made with `py run_local.py --make-setup-script`,
+   holds live secrets, never commit it) is used first if it's present.
 3. Checks the database connects. If the Azure SQL firewall blocks your
    IP and you're signed into the Azure CLI, it offers to add a rule.
 4. Builds the web page and serves everything at http://localhost:8000
@@ -76,6 +74,23 @@ Later runs skip whatever is already done. Other options:
   can't queue prints in the warehouse.
 - For live frontend editing, run `npm run dev` in `frontend/` alongside
   the backend and open http://localhost:3000.
+
+### Azure access (one time per developer)
+
+Reading the settings needs the **Website Contributor** role on
+tc-planner-app. An owner of the subscription grants it once (Azure
+portal → tc-planner-app → Access control (IAM) → Add role assignment),
+or with the CLI:
+
+```
+az role assignment create --assignee THEIR-EMAIL --role "Website Contributor" --scope /subscriptions/cbb1bba1-5404-4caa-961e-a39b36d3fa86/resourceGroups/shopify-automation-rg/providers/Microsoft.Web/sites/tc-planner-app
+```
+
+Someone outside the organization's Microsoft account first needs a guest
+invite (Microsoft Entra ID → Users → Invite external user). The optional
+automatic SQL firewall rule additionally needs **SQL Server
+Contributor** on the SQL server; without it, the launcher prints the IP
+for an owner to allow.
 
 ### Manual backend setup
 

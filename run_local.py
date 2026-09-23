@@ -14,7 +14,9 @@ What it does, every run:
        a. setup_env.py next to this file (gitignored, has the secrets
           built in - someone with Azure access makes it with
           --make-setup-script and hands it over privately), then
-       b. the live tc-planner-app settings, if the Azure CLI is signed in.
+       b. the live tc-planner-app settings via the Azure CLI (installed
+          with winget if missing; opens a browser sign-in if needed).
+          The account needs read access to tc-planner-app's settings.
   3. Installs the SQL Server ODBC driver and Node.js with winget when
      they're missing (Windows asks for permission once).
   4. Checks the database connects; if the Azure SQL firewall blocks this
@@ -114,7 +116,32 @@ def ensure_venv():
 # ─── Settings (backend/.env) ────────────────────────────────────
 
 def az_exe():
-    return shutil.which("az")
+    az = shutil.which("az")
+    if az or not is_windows():
+        return az
+    # A fresh winget install isn't on this window's PATH yet.
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if base:
+            cand = Path(base) / "Microsoft SDKs" / "Azure" / "CLI2" / "wbin" / "az.cmd"
+            if cand.exists():
+                return str(cand)
+    return None
+
+
+def azure_settings_via_login():
+    """No setup_env.py: install the Azure CLI if needed, sign in through
+    the browser, and read the live settings. None if the account has no
+    access to tc-planner-app."""
+    if not az_exe():
+        winget_install("Microsoft.AzureCLI", "the Azure CLI")
+    if not az_exe():
+        return None
+    live = fetch_azure_settings()
+    if live is not None or not sys.stdin.isatty():
+        return live
+    print("    Sign in to Azure in the browser window that opens...", flush=True)
+    subprocess.run([az_exe(), "login", "--only-show-errors", "-o", "none"])
+    return fetch_azure_settings()
 
 
 def fetch_azure_settings():
@@ -252,17 +279,15 @@ def ensure_env(refresh: bool):
         if env_ready():
             return
         warn(f"{SETUP_SCRIPT.name} ran but backend/.env still looks unfilled.")
-    live = fetch_azure_settings()
+    live = azure_settings_via_login()
     if live is not None:
         write_env_from_azure(live)
         print(f"    Pulled backend/.env from Azure ({AZURE_APP}).")
         return
-    sys.exit("    backend/.env is missing and there's no way to fill it in automatically.\n"
-             "    Either:\n"
-             "      - put setup_env.py (ask whoever manages the planner) next to\n"
-             "        run_local.py and run this again, or\n"
-             "      - install the Azure CLI, run `az login` with an account that can\n"
-             "        see tc-planner-app, and run this again.")
+    sys.exit("    Couldn't fill in backend/.env: the Azure account you signed in with\n"
+             f"    can't read {AZURE_APP}'s settings. Ask whoever manages the planner\n"
+             "    to give your account access (see README, 'Azure access'), then run\n"
+             "    this again. (Or drop a setup_env.py from them next to run_local.py.)")
 
 
 # ─── Prerequisites (winget) ─────────────────────────────────────
