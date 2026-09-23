@@ -46,27 +46,34 @@ generates replenishment recommendations using seasonal sales velocity.
 
 ### Quick start (Windows)
 
-One-time installs (any Python 3.11 or newer works, including 3.13/3.14):
+Double-click `run-local.bat`. That's it. On the first run it:
 
-```
-winget install --id Python.Python.3.13 -e
-winget install --id Microsoft.msodbcsql.18 -e
-winget install --id OpenJS.NodeJS.LTS -e
-```
+1. Installs Python (if missing), ODBC Driver 18 for SQL Server and
+   Node.js LTS with winget. Windows asks for permission once; running it
+   accepts those installers' licence terms.
+2. Writes `backend\.env` automatically, from either:
+   - **`setup_env.py`** - a gitignored file with the live settings built
+     in. Someone with Azure access makes it with
+     `py run_local.py --make-setup-script` and hands it over privately
+     (it holds live secrets: never commit it or post it in a group
+     chat). Drop it next to `run_local.py`.
+   - **the Azure CLI** - if you're signed in (`az login`) with access to
+     tc-planner-app, the settings are pulled straight from it.
+3. Checks the database connects. If the Azure SQL firewall blocks your
+   IP and you're signed into the Azure CLI, it offers to add a rule.
+4. Builds the web page and serves everything at http://localhost:8000
+   (API docs at http://localhost:8000/docs).
 
-Then double-click `run-local.bat` (or run `py run_local.py`). The first
-run creates `backend\.env` from the template and stops. Fill in the real
-values (Azure portal → App Services → tc-planner-app → Settings →
-Environment variables) and run it again. It sets up `backend\.venv`,
-builds the web page, and serves everything at http://localhost:8000
-(API docs at http://localhost:8000/docs).
+Later runs skip whatever is already done. Other options:
 
 - `py run_local.py --lan` lets other PCs on the network connect.
+- `py run_local.py --refresh-env` re-pulls `backend\.env` from Azure
+  after secrets change (or get a fresh `setup_env.py` and delete
+  `backend\.env`).
 - **Your local copy uses the LIVE database and Shopify store.** Saving
-  a stock order locally changes real data. Leave `RFID_STATION_KEY`
-  blank unless you mean to send label jobs to the live RFID app.
-- If the database won't connect, the Azure SQL firewall may be blocking
-  your IP: add it on the SQL server's Networking page in the portal.
+  a stock order locally changes real data. The RFID label bridge is
+  always switched off locally (`RFID_STATION_KEY` blank) so a dev copy
+  can't queue prints in the warehouse.
 - For live frontend editing, run `npm run dev` in `frontend/` alongside
   the backend and open http://localhost:3000.
 
