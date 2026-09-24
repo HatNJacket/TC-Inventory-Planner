@@ -214,6 +214,20 @@ class ShopifyClient:
 
         raise Exception("Max retries exceeded for Shopify API")
 
+    async def warm_connection(self) -> None:
+        """Pre-create the HTTP client and obtain a Shopify token.
+
+        Shipping order lookup is often the first Shopify call after the Planner
+        starts. Warming in the background removes most of that cold-start delay
+        without making application startup depend on Shopify being reachable.
+        """
+        try:
+            await self._get_client()
+            await self._get_access_token(force_refresh=False)
+            logger.info("Shopify connection warmed")
+        except Exception as exc:
+            logger.warning("Shopify warm-up skipped: %s", exc)
+
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()

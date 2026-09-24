@@ -59,6 +59,17 @@ git pull origin development
 
 ### Quick start (Windows)
 
+For fast shipping development/testing, double-click **`Start Shipping Planner.bat`**.
+It starts the backend and frontend together in one window and opens
+http://localhost:3000 once both are ready. Select **Shipping** after signing in.
+Keep the launcher window open; press **Ctrl+C** there to stop both servers.
+Close any previously started backend/frontend terminals before the first run.
+Python and frontend dependencies are installed on the first run (and when their
+dependency files change). Later launches skip those installs and the frontend
+build; frontend edits refresh automatically and Python edits restart the API.
+It uses the same `backend/.env` and local shipping data as your manual launch.
+The existing live-database/Shopify precautions below still apply.
+
 Double-click `run-local.bat`. That's it. On the first run it:
 
 1. Installs Python (if missing), ODBC Driver 18 for SQL Server and

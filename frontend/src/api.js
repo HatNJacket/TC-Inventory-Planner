@@ -4,6 +4,12 @@
  */
 
 const API_BASE = '/api';
+let shippingUserId = '';
+export function setShippingUser(user) { shippingUserId = user?.id || ''; }
+export function getShippingUsers() { return apiFetch('/shipping/users'); }
+export function createShippingUser(user) {
+  return apiFetch('/shipping/users', { method: 'POST', body: JSON.stringify(user) });
+}
 
 // Token is stored in localStorage after login
 function getToken() {
@@ -23,6 +29,7 @@ async function apiFetch(path, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
     ...(token && { Authorization: `Bearer ${token}` }),
+    ...(path.startsWith('/shipping/') && shippingUserId && { 'X-Shipping-User': shippingUserId }),
     ...options.headers,
   };
 
@@ -1300,4 +1307,89 @@ export async function getShippingRegistryStatus() {
 export async function lookupShippingRegistrySku(sku) {
   const params = new URLSearchParams({ sku });
   return apiFetch('/shipping/registry/lookup?' + params.toString());
+}
+
+
+// ─── Shipping Phase 2A: packing + carton stock ─────────────────
+export async function buildShippingPackingPlan(orderNumber) {
+  return apiFetch('/shipping/orders/' + encodeURIComponent(String(orderNumber).trim()) + '/packing-plan', {
+    method: 'POST',
+  });
+}
+
+const CARTON_CACHE_KEY = 'tc_shipping_cartons_v1';
+let cartonRequest = null;
+export function getCachedShippingCartons() {
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(CARTON_CACHE_KEY));
+    return Array.isArray(cached?.inventory) ? cached : null;
+  } catch { return null; }
+}
+function cacheCartons(data) {
+  try { sessionStorage.setItem(CARTON_CACHE_KEY, JSON.stringify(data)); } catch { /* Storage may be disabled. */ }
+  return data;
+}
+export function getShippingCartons() {
+  if (!cartonRequest) {
+    cartonRequest = apiFetch('/shipping/cartons').then(cacheCartons).finally(() => { cartonRequest = null; });
+  }
+  return cartonRequest;
+}
+
+export async function saveShippingCartonStock(changes) {
+  const result = await apiFetch('/shipping/cartons/stock', {
+    method: 'POST',
+    body: JSON.stringify({ changes }),
+  });
+  return cacheCartons(result);
+}
+
+
+// ─── Shipping V5.7 migration ───────────────────────────────────
+export async function buildShippingPlanFromLoadedOrder(payload) {
+  return apiFetch('/shipping/packing-plan', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getShippingPackageDatabase(query = '', limit = 50) {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return apiFetch('/shipping/package-database?' + params.toString());
+}
+
+export async function saveShippingPackageRecord(record) {
+  return apiFetch('/shipping/package-database', {
+    method: 'POST',
+    body: JSON.stringify({ record }),
+  });
+}
+
+export async function deleteShippingPackageRecord(recordId) {
+  return apiFetch('/shipping/package-database/' + encodeURIComponent(recordId), {
+    method: 'DELETE',
+  });
+}
+
+export async function getShippingPackingHistory(limit = 200) {
+  return apiFetch('/shipping/packing-history?limit=' + encodeURIComponent(String(limit)));
+}
+
+export async function getShippingPackingHistorySummary(hostRegistryId) {
+  const params = new URLSearchParams({ host_registry_id: hostRegistryId });
+  return apiFetch('/shipping/packing-history/summary?' + params.toString());
+}
+
+export async function getShippingCombinationSummary(hostRegistryId, accessories) {
+  return apiFetch('/shipping/packing-history/combination', {
+    method: 'POST',
+    body: JSON.stringify({ host_registry_id: hostRegistryId, accessories }),
+  });
+}
+
+export async function saveShippingPackingObservation(payload) {
+  return apiFetch('/shipping/packing-history/observations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }

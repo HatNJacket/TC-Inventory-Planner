@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import List, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Security
+from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -22,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import config
+from . import shipping_users
 from .database import db
 from .forecasting import forecast_engine
 from .shopify_client import shopify_client
@@ -29,6 +31,21 @@ from .shipping_registry import (
     expand_order as expand_shipping_order,
     lookup_sku as shipping_lookup_sku,
     registry_status as shipping_registry_status,
+)
+from .shipping_optimizer import (
+    build_packing_plan as build_shipping_packing_plan,
+    get_carton_catalog as shipping_carton_catalog,
+    set_carton_stock_bulk as set_shipping_carton_stock_bulk,
+)
+from .shipping_v57_service import (
+    delete_registry_record as shipping_delete_registry_record,
+    packing_combination_summary as shipping_combination_summary,
+    packing_history_payload as shipping_history_payload,
+    packing_history_summary as shipping_history_summary,
+    plan_payload as shipping_plan_payload,
+    registry_payload as shipping_registry_records,
+    save_packing_observation as shipping_save_observation,
+    save_registry_record as shipping_save_registry_record,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -63,6 +80,16 @@ def current_user(credentials: HTTPAuthorizationCredentials = Security(security))
     raise HTTPException(status_code=401, detail="Invalid token")
 
 
+def current_shipping_user(
+    token: str = Depends(verify_token),
+    user_id: str = Header("", alias="X-Shipping-User"),
+) -> str:
+    profile = shipping_users.resolve_user(user_id)
+    if not profile:
+        raise HTTPException(status_code=400, detail="Select a warehouse user in Shipping before saving.")
+    return profile["name"]
+
+
 # ─── APP LIFECYCLE ───────────────────────────────────────────────
 
 @asynccontextmanager
@@ -75,6 +102,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         logger.info("App will start without database - set connection env vars")
+
+    # Warm Shopify auth/HTTP in the background so the first Shipping lookup
+    # normally does not pay the client-credentials + TLS cold-start cost.
+    asyncio.create_task(shopify_client.warm_connection())
 
     yield
 
@@ -6399,6 +6430,149 @@ async def shipping_order_for_packing(
     except Exception as e:
         logger.error("Shipping order lookup failed for %s: %s", order_number, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+# ─── SHIPPING / PACKING PHASE 2A ────────────────────────────────
+
+@app.get("/api/shipping/users")
+def shipping_user_profiles(token: str = Depends(verify_token)):
+    return {"users": shipping_users.load_users()}
+
+
+@app.post("/api/shipping/users")
+def shipping_user_create(payload: dict, token: str = Depends(verify_token)):
+    try:
+        return {"user": shipping_users.save_user(payload)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/shipping/cartons")
+def shipping_cartons(token: str = Depends(verify_token)):
+    """Return carton catalog plus warehouse on-hand counts."""
+    return shipping_carton_catalog()
+
+@app.post("/api/shipping/cartons/stock")
+async def shipping_cartons_stock(
+    payload: dict,
+    user: str = Depends(current_shipping_user),
+):
+    """Save carton counts in one operation. Blank/null = not counted; zero = out of stock."""
+    try:
+        return set_shipping_carton_stock_bulk(payload.get("changes") or [], user_name=user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/shipping/orders/{order_number}/packing-plan")
+async def shipping_order_packing_plan(
+    order_number: str,
+    token: str = Depends(verify_token),
+):
+    """Load the live Shopify order, resolve packages, and create a stock-aware 3D packing plan."""
+    try:
+        order = await shopify_client.fetch_order_for_shipping(order_number)
+        if not order:
+            raise HTTPException(status_code=404, detail=f"Shopify order {order_number!r} was not found")
+        expanded = expand_shipping_order(order)
+        return await run_in_threadpool(build_shipping_packing_plan, expanded)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Shipping packing-plan failed for %s: %s", order_number, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─── SHIPPING / PACKING V5.7 MIGRATION ─────────────────────────
+
+@app.post("/api/shipping/packing-plan")
+async def shipping_v57_packing_plan(
+    payload: dict,
+    token: str = Depends(verify_token),
+):
+    """Build a plan from the already-loaded order state, including packed-inside assignments.
+
+    This avoids a second Shopify request when staff rebuild a plan after recording
+    accessory-carrier results.
+    """
+    try:
+        return await run_in_threadpool(shipping_plan_payload, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/shipping/package-database")
+def shipping_package_database(
+    q: str = Query(""),
+    limit: int = Query(50, ge=1, le=50),
+    token: str = Depends(verify_token),
+):
+    return shipping_registry_records(q, limit=limit)
+
+
+@app.post("/api/shipping/package-database")
+async def shipping_package_database_save(
+    payload: dict,
+    user: str = Depends(current_shipping_user),
+):
+    try:
+        return shipping_save_registry_record(payload.get("record") or payload, measured_by_default=user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/shipping/package-database/{record_id}")
+async def shipping_package_database_delete(
+    record_id: str,
+    token: str = Depends(verify_token),
+):
+    try:
+        return shipping_delete_registry_record(record_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/shipping/packing-history")
+async def shipping_packing_history(
+    limit: int = Query(200, ge=1, le=500),
+    token: str = Depends(verify_token),
+):
+    return shipping_history_payload(limit)
+
+
+@app.get("/api/shipping/packing-history/summary")
+async def shipping_packing_history_summary(
+    host_registry_id: str = Query(..., min_length=1),
+    token: str = Depends(verify_token),
+):
+    try:
+        return shipping_history_summary(host_registry_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/shipping/packing-history/combination")
+async def shipping_packing_combination(
+    payload: dict,
+    token: str = Depends(verify_token),
+):
+    try:
+        return shipping_combination_summary(
+            str(payload.get("host_registry_id") or ""),
+            payload.get("accessories") or [],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/shipping/packing-history/observations")
+async def shipping_packing_observation(
+    payload: dict,
+    user: str = Depends(current_shipping_user),
+):
+    try:
+        return shipping_save_observation(payload, packed_by=user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # ─── STATIC FILES & SPA FALLBACK ─────────────────────────────────
 

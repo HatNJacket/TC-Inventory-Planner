@@ -1283,6 +1283,7 @@ export default function App() {
   // so we use this counter as a side-channel signal to tell the
   // StockOrdersPage to drop back to the list view.
   const [stockOrdersResetSignal, setStockOrdersResetSignal] = useState(0);
+  const [shippingEntrySignal, setShippingEntrySignal] = useState(0);
   // Display name for the signed-in token (shown in the sidebar; receipts are
   // attributed to this user server-side).
   const [currentUser, setCurrentUser] = useState(null);
@@ -1316,6 +1317,7 @@ export default function App() {
   // already on Stock Orders, bump the reset counter to send the page
   // back to its list view.
   const navigate = useCallback((page) => {
+    if (page === 'shipping') setShippingEntrySignal(n => n + 1);
     if (page === 'stockorders') {
       setStockOrdersResetSignal(n => n + 1);
     }
@@ -1339,7 +1341,7 @@ export default function App() {
       case 'stockorders':
         return <StockOrdersPage onToast={showToast} resetSignal={stockOrdersResetSignal} prefillReceive={prefillReceive} onPrefillConsumed={() => setPrefillReceive(null)} />;
       case 'shipping':
-        return <ShippingPage onToast={showToast} currentUser={currentUser} />;
+        return <ShippingPage onToast={showToast} entrySignal={shippingEntrySignal} />;
       case 'backorders':
         return <BackordersPage onToast={showToast} onNavigate={navigate} />;
       case 'intelligence':
