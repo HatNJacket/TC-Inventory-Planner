@@ -132,7 +132,8 @@ class StatusUpdate(BaseModel):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "service": "tc-inventory-planner"}
+    return {"status": "ok", "service": "tc-inventory-planner",
+            "build": os.getenv("BUILD_TAG", "local")}
 
 
 @app.get("/api/auth/whoami")

@@ -37,6 +37,11 @@ COPY --from=frontend /fe/dist/ ./static/
 # Serve frontend from FastAPI static files
 ENV PORT=8000
 
+# Image tag, reported by /api/health so a deploy can prove the new
+# container is the one answering (the deploy workflow passes it in).
+ARG BUILD_TAG=unknown
+ENV BUILD_TAG=$BUILD_TAG
+
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

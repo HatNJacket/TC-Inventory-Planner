@@ -42,6 +42,19 @@ generates replenishment recommendations using seasonal sales velocity.
 | Nov   | 1.457     | Black Friday / holiday peak |
 | Dec   | 1.381     | Holiday peak continues |
 
+## Branches (read this first)
+
+- **`development`** - do all your work here. Push to it freely; nothing
+  goes live.
+- **`main`** - production. **Every push to main deploys to Azure
+  automatically** (GitHub Actions, `.github/workflows/deploy.yml`).
+  Only merge into main when the change is tested and approved.
+
+```
+git checkout development
+git pull origin development
+```
+
 ## Local Development
 
 ### Quick start (Windows)

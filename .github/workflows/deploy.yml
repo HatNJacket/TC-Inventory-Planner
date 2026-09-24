@@ -1,0 +1,83 @@
+# Deploys TC-Planner to Azure on every push to main.
+#
+# Day-to-day work goes on the `development` branch; merging it into main
+# is what ships. The image is always built from the pushed commit, so a
+# deploy can never come from a stale or dirty local checkout (which
+# silently rolled prod back on 2026-09-14).
+#
+# Azure sign-in is keyless (OIDC): the app registration
+# "github-tc-planner-deploy" trusts ONLY this repo's main branch and can
+# only build in tcplanneracr and update tc-planner-app. The IDs below are
+# identifiers, not secrets.
+name: Deploy to Azure
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-tc-planner
+  cancel-in-progress: false
+
+env:
+  REGISTRY: tcplanneracr
+  IMAGE: tc-planner
+  WEBAPP: tc-planner-app
+  RESOURCE_GROUP: shopify-automation-rg
+  SITE_URL: https://tc-planner-app.azurewebsites.net
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure sign-in (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: 8418c90c-21ac-46a9-bec8-1c5daf79722c
+          tenant-id: 22fdb4d9-3874-4b46-8918-1045e60171e5
+          subscription-id: cbb1bba1-5404-4caa-961e-a39b36d3fa86
+
+      - name: Pick the image tag
+        run: echo "TAG=$(date -u +%Y-%m-%d)-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Build the image in ACR
+        run: |
+          az acr build -r "$REGISTRY" \
+            -t "$IMAGE:$TAG" -t "$IMAGE:latest" \
+            --build-arg BUILD_TAG="$TAG" .
+
+      # Pointing the app at the new dated tag is what forces the pull; a
+      # restart onto :latest has served a stale container for a week.
+      - name: Point tc-planner-app at the new tag
+        run: |
+          az webapp config container set -n "$WEBAPP" -g "$RESOURCE_GROUP" \
+            --container-image-name "$REGISTRY.azurecr.io/$IMAGE:$TAG" -o none
+
+      - name: Wait for the new build to answer
+        run: |
+          for i in $(seq 1 60); do
+            build=$(curl -s -m 10 "$SITE_URL/api/health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('build',''))" 2>/dev/null || true)
+            if [ "$build" = "$TAG" ]; then
+              echo "Live: $TAG"
+              break
+            fi
+            echo "Waiting ($i/60): site reports build '${build:-none}'"
+            sleep 10
+          done
+          [ "$build" = "$TAG" ] || { echo "::error::Site never reported build $TAG"; exit 1; }
+
+      - name: Check the web page bundle is served
+        run: |
+          bundle=$(curl -s -m 20 "$SITE_URL/" | grep -o '/assets/index-[^"]*\.js' | head -1)
+          [ -n "$bundle" ] || { echo "::error::index.html names no bundle"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "$SITE_URL$bundle")
+          echo "$bundle -> $code"
+          [ "$code" = "200" ] || { echo "::error::bundle $bundle returned $code"; exit 1; }
