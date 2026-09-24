@@ -1287,3 +1287,17 @@ export async function activateProduct(productId, publish = true) {
     method: 'POST', body: JSON.stringify({ publish }),
   });
 }
+
+// ─── Shipping / Packing ─────────────────────────────────────────
+export async function getShippingOrder(orderNumber) {
+  return apiFetch('/shipping/orders/' + encodeURIComponent(String(orderNumber).trim()));
+}
+
+export async function getShippingRegistryStatus() {
+  return apiFetch('/shipping/registry/status');
+}
+
+export async function lookupShippingRegistrySku(sku) {
+  const params = new URLSearchParams({ sku });
+  return apiFetch('/shipping/registry/lookup?' + params.toString());
+}

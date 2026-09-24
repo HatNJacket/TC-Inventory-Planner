@@ -98,26 +98,96 @@ class ShopifyClient:
 
     def __init__(self):
         self.url = config.shopify_graphql_url
-        self.headers = {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": config.SHOPIFY_ACCESS_TOKEN,
-        }
         self._client: Optional[httpx.AsyncClient] = None
+        self._access_token: Optional[str] = None
+        self._token_expires_at: float = 0.0
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=60.0)
         return self._client
 
+    async def _get_access_token(self, force_refresh: bool = False) -> str:
+        """Return a valid Shopify Admin API access token.
+
+        Preferred mode is Shopify's Dev Dashboard client-credentials grant.
+        The token is cached and refreshed one minute before expiry.
+        SHOPIFY_ACCESS_TOKEN remains supported as a legacy fallback.
+        """
+        import time
+
+        if config.SHOPIFY_CLIENT_ID and config.SHOPIFY_CLIENT_SECRET:
+            now = time.time()
+            if (
+                not force_refresh
+                and self._access_token
+                and now < self._token_expires_at - 60
+            ):
+                return self._access_token
+
+            client = await self._get_client()
+            token_url = (
+                f"https://{config.SHOPIFY_STORE}.myshopify.com/admin/oauth/access_token"
+            )
+            response = await client.post(
+                token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": config.SHOPIFY_CLIENT_ID,
+                    "client_secret": config.SHOPIFY_CLIENT_SECRET,
+                },
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            body = response.json()
+            token = body.get("access_token")
+            if not token:
+                raise RuntimeError(
+                    "Shopify token response did not contain access_token"
+                )
+            self._access_token = token
+            self._token_expires_at = now + float(body.get("expires_in") or 86399)
+            logger.info("Obtained Shopify access token using client credentials")
+            return token
+
+        if config.SHOPIFY_ACCESS_TOKEN:
+            return config.SHOPIFY_ACCESS_TOKEN
+
+        raise RuntimeError(
+            "Shopify credentials are not configured. Set SHOPIFY_CLIENT_ID and "
+            "SHOPIFY_CLIENT_SECRET (preferred), or SHOPIFY_ACCESS_TOKEN (legacy)."
+        )
+
     async def _query(self, query: str, variables: Optional[Dict] = None) -> Dict:
-        """Execute a GraphQL query with automatic rate limit handling."""
+        """Execute a GraphQL query with automatic auth + rate-limit handling."""
         client = await self._get_client()
         payload = {"query": query}
         if variables:
             payload["variables"] = variables
 
         for attempt in range(3):
-            response = await client.post(self.url, json=payload, headers=self.headers)
+            token = await self._get_access_token(force_refresh=False)
+            headers = {
+                "Content-Type": "application/json",
+                "X-Shopify-Access-Token": token,
+            }
+            response = await client.post(self.url, json=payload, headers=headers)
+
+            # A cached client-credentials token can be revoked/expired early.
+            # Refresh once automatically rather than making the user restart.
+            if (
+                response.status_code == 401
+                and config.SHOPIFY_CLIENT_ID
+                and config.SHOPIFY_CLIENT_SECRET
+            ):
+                logger.warning(
+                    "Shopify returned 401; refreshing client-credentials token"
+                )
+                self._access_token = None
+                self._token_expires_at = 0.0
+                if attempt < 2:
+                    await self._get_access_token(force_refresh=True)
+                    continue
 
             if response.status_code == 429:
                 retry_after = float(response.headers.get("Retry-After", "2"))
@@ -127,19 +197,19 @@ class ShopifyClient:
 
             response.raise_for_status()
             data = response.json()
-
             if "errors" in data:
                 logger.error(f"GraphQL errors: {data['errors']}")
                 raise Exception(f"GraphQL error: {data['errors']}")
 
-            # Check remaining query cost
+            # Check remaining query cost.
             ext = data.get("extensions", {})
             cost = ext.get("cost", {})
             if cost:
-                available = cost.get("throttleStatus", {}).get("currentlyAvailable", 1000)
+                available = cost.get("throttleStatus", {}).get(
+                    "currentlyAvailable", 1000
+                )
                 if available < 100:
                     await asyncio.sleep(1)
-
             return data["data"]
 
         raise Exception("Max retries exceeded for Shopify API")
@@ -1750,6 +1820,142 @@ class ShopifyClient:
             product_id, len(publish_inputs), ", ".join(pub_names),
         )
         return len(publish_inputs)
+
+
+    # ─── SHIPPING ORDER LOOKUP ─────────────────────────────────────
+    async def fetch_order_for_shipping(self, order_number: str) -> Optional[Dict]:
+        """Fetch one Shopify order for warehouse packing.
+
+        ``order_number`` may be entered as ``51234`` or ``#51234``. Only data
+        required for fulfillment/rating is returned; payment details are never
+        requested. Quantities use Shopify's unfulfilled quantity so partially
+        fulfilled orders do not get packed twice.
+        """
+        raw = str(order_number or "").strip()
+        if not raw:
+            return None
+        wanted = raw.lstrip("#").strip()
+        if not wanted:
+            return None
+
+        gql = """
+        query shippingOrder($query: String!) {
+            orders(first: 10, query: $query, sortKey: CREATED_AT, reverse: true) {
+                edges {
+                    node {
+                        id
+                        name
+                        createdAt
+                        cancelledAt
+                        displayFinancialStatus
+                        displayFulfillmentStatus
+                        shippingAddress {
+                            name
+                            company
+                            address1
+                            address2
+                            city
+                            province
+                            provinceCode
+                            zip
+                            country
+                            countryCodeV2
+                            phone
+                        }
+                        shippingLines(first: 10) {
+                            edges { node { title code source } }
+                        }
+                        lineItems(first: 250) {
+                            edges {
+                                node {
+                                    id
+                                    title
+                                    sku
+                                    quantity
+                                    currentQuantity
+                                    unfulfilledQuantity
+                                    requiresShipping
+                                    vendor
+                                    variant { id title }
+                                    product { id vendor }
+                                }
+                            }
+                            pageInfo { hasNextPage }
+                        }
+                    }
+                }
+            }
+        }
+        """
+
+        # Order-name search accepts the number without '#'. We still exact-match
+        # the returned node because Shopify search can be fuzzy in edge cases.
+        data = await self._query(gql, {"query": f"name:{wanted}"})
+        edges = ((data.get("orders") or {}).get("edges") or [])
+        order = None
+        for edge in edges:
+            node = edge.get("node") or {}
+            if str(node.get("name") or "").lstrip("#").strip() == wanted:
+                order = node
+                break
+        if order is None:
+            return None
+
+        line_items = []
+        for edge in ((order.get("lineItems") or {}).get("edges") or []):
+            li = edge.get("node") or {}
+            qty = li.get("unfulfilledQuantity")
+            if qty is None:
+                qty = li.get("currentQuantity")
+            if qty is None:
+                qty = li.get("quantity") or 0
+            line_items.append({
+                "id": li.get("id"),
+                "sku": normalize_sku(li.get("sku") or ""),
+                "title": li.get("title") or "",
+                "variant_title": (li.get("variant") or {}).get("title") or "",
+                "quantity": int(li.get("quantity") or 0),
+                "current_quantity": int(li.get("currentQuantity") or 0),
+                "unfulfilled_quantity": int(li.get("unfulfilledQuantity") or 0),
+                "pack_quantity": max(0, int(qty or 0)),
+                "requires_shipping": li.get("requiresShipping", True),
+                "variant_id": (li.get("variant") or {}).get("id") or "",
+                "product_id": (li.get("product") or {}).get("id") or "",
+                "vendor": li.get("vendor") or (li.get("product") or {}).get("vendor") or "",
+            })
+
+        address = order.get("shippingAddress") or {}
+        shipping_lines = [
+            (edge.get("node") or {})
+            for edge in ((order.get("shippingLines") or {}).get("edges") or [])
+        ]
+        return {
+            "id": order.get("id"),
+            "name": order.get("name") or f"#{wanted}",
+            "created_at": order.get("createdAt"),
+            "cancelled_at": order.get("cancelledAt"),
+            "financial_status": order.get("displayFinancialStatus"),
+            "fulfillment_status": order.get("displayFulfillmentStatus"),
+            "shipping_address": {
+                "name": address.get("name") or "",
+                "company": address.get("company") or "",
+                "address1": address.get("address1") or "",
+                "address2": address.get("address2") or "",
+                "city": address.get("city") or "",
+                "province": address.get("province") or "",
+                "province_code": address.get("provinceCode") or "",
+                "zip": address.get("zip") or "",
+                "country": address.get("country") or "",
+                "country_code": address.get("countryCodeV2") or "",
+                "phone": address.get("phone") or "",
+            },
+            "shipping_method": shipping_lines[0].get("title") if shipping_lines else "",
+            "shipping_lines": shipping_lines,
+            "line_items": line_items,
+            "warnings": (["Order has more than 250 line items; Phase 1 only loaded the first 250."]
+                         if ((order.get("lineItems") or {}).get("pageInfo") or {}).get("hasNextPage")
+                         else []),
+        }
 
     # ─── COLLECTION MANAGEMENT ───────────────────────────────────
 

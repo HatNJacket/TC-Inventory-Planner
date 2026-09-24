@@ -14,6 +14,7 @@ import DonationsPage from './DonationsPage';
 import WaitersPage from './WaitersPage';
 import PoComparisonPage from './PoComparisonPage';
 import SettingsPage from './SettingsPage';
+import ShippingPage from './ShippingPage';
 
 // ─── FORMATTING ─────────────────────────────────────────────────
 
@@ -114,6 +115,7 @@ function Sidebar({ currentPage, onNavigate, currentUser }) {
     { id: 'overview', icon: '📊', label: 'Overview' },
     { id: 'replenishment', icon: '🔄', label: 'Replenishment' },
     { id: 'stockorders', icon: '📋', label: 'Stock Orders' },
+    { id: 'shipping', icon: '📦', label: 'Shipping' },
     { id: 'backorders', icon: '⚠️', label: 'Backorders' },
     'divider',
     { id: 'intelligence', icon: '🎯', label: 'Intelligence' },
@@ -1336,6 +1338,8 @@ export default function App() {
         return <ReplenishmentPage onToast={showToast} onNavigate={navigate} />;
       case 'stockorders':
         return <StockOrdersPage onToast={showToast} resetSignal={stockOrdersResetSignal} prefillReceive={prefillReceive} onPrefillConsumed={() => setPrefillReceive(null)} />;
+      case 'shipping':
+        return <ShippingPage onToast={showToast} currentUser={currentUser} />;
       case 'backorders':
         return <BackordersPage onToast={showToast} onNavigate={navigate} />;
       case 'intelligence':

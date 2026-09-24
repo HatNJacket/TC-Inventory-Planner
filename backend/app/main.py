@@ -25,6 +25,11 @@ from .config import config
 from .database import db
 from .forecasting import forecast_engine
 from .shopify_client import shopify_client
+from .shipping_registry import (
+    expand_order as expand_shipping_order,
+    lookup_sku as shipping_lookup_sku,
+    registry_status as shipping_registry_status,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -6359,6 +6364,41 @@ async def cogs_llm_parse_invoice(
         logger.error(f"LLM invoice parse error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+# ─── SHIPPING / PACKING PHASE 1 ─────────────────────────────────
+
+@app.get("/api/shipping/registry/status")
+async def shipping_registry_summary(token: str = Depends(verify_token)):
+    """Summary of the bundled package-dimension seed used by Shipping."""
+    return shipping_registry_status()
+
+
+@app.get("/api/shipping/registry/lookup")
+async def shipping_registry_lookup(
+    sku: str = Query(..., min_length=1),
+    token: str = Depends(verify_token),
+):
+    records = shipping_lookup_sku(sku)
+    return {"sku": sku, "records": records, "count": len(records)}
+
+
+@app.get("/api/shipping/orders/{order_number}")
+async def shipping_order_for_packing(
+    order_number: str,
+    token: str = Depends(verify_token),
+):
+    """Load a Shopify order and resolve every shippable SKU to physical packages."""
+    try:
+        order = await shopify_client.fetch_order_for_shipping(order_number)
+        if not order:
+            raise HTTPException(status_code=404, detail=f"Shopify order {order_number!r} was not found")
+        return expand_shipping_order(order)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Shipping order lookup failed for %s: %s", order_number, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ─── STATIC FILES & SPA FALLBACK ─────────────────────────────────
 

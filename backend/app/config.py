@@ -18,8 +18,11 @@ load_dotenv(_env_path)
 @dataclass
 class Config:
     # Shopify API
-    SHOPIFY_STORE: str = os.getenv("SHOPIFY_STORE", "telescopes-canada")
-    SHOPIFY_API_VERSION: str = os.getenv("SHOPIFY_API_VERSION", "2025-01")
+    SHOPIFY_STORE: str = (os.getenv("SHOPIFY_STORE") or os.getenv("SHOPIFY_SHOP") or "telescopes-canada")
+    SHOPIFY_API_VERSION: str = os.getenv("SHOPIFY_API_VERSION", "2026-07")
+    SHOPIFY_CLIENT_ID: str = os.getenv("SHOPIFY_CLIENT_ID", "")
+    SHOPIFY_CLIENT_SECRET: str = os.getenv("SHOPIFY_CLIENT_SECRET", "")
+    # Legacy fallback for older deployments. Client credentials are preferred.
     SHOPIFY_ACCESS_TOKEN: str = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
 
     # Azure SQL
