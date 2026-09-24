@@ -12,7 +12,9 @@ Dockerfile is multi-stage and builds the frontend INSIDE `az acr build`
 needed and a stale local bundle can never ship:
 
 ```powershell
-az acr build --registry tcplanneracr --image tc-planner:latest --no-logs .
+git fetch origin; git status   # must NOT be behind origin/main -- see below
+az acr build --registry tcplanneracr --image tc-planner:<YYYY-MM-DD><x> --image tc-planner:latest --no-logs .
+az webapp config container set --name tc-planner-app --resource-group shopify-automation-rg --container-image-name tcplanneracr.azurecr.io/tc-planner:<YYYY-MM-DD><x>
 az webapp restart --name tc-planner-app --resource-group shopify-automation-rg
 ```
 
@@ -34,9 +36,19 @@ What each step does:
    `C:\tc-planner\backend\static\`. The Dockerfile copies this directory
    into the image, so skipping this step ships stale frontend code.
 2. `az acr build` — Builds the Docker image in Azure Container Registry
-   (`tcplanneracr`) and tags it `tc-planner:latest`.
-3. `az webapp restart` — Restarts the App Service so it pulls the new
-   `tc-planner:latest` image.
+   (`tcplanneracr`) under a dated tag (e.g. `2026-09-17a`) plus `latest`.
+3. `az webapp config container set` — Points the App Service at that dated
+   tag. **Since 2026-09-14 the app runs a pinned tag, not `latest`**, so
+   building `latest` alone deploys nothing. Check what is live with
+   `az webapp config show ... --query linuxFxVersion`.
+4. `az webapp restart` — Restarts the App Service onto the new image.
+
+> **Deploys happen from more than one machine.** The image is built from the
+> local working tree, so building from a checkout that is behind
+> `origin/main` -- or that holds uncommitted work -- silently rolls back
+> whatever the other machine shipped. On 2026-09-14 a deploy from GitHub
+> removed a week of uncommitted features this way. Before building: pull,
+> and commit/push anything you are about to ship.
 
 ### When deploys are NOT needed
 
@@ -50,7 +62,7 @@ What each step does:
 
 - **App Service**: `tc-planner-app` (resource group `shopify-automation-rg`)
 - **Container Registry**: `tcplanneracr`
-- **Image**: `tc-planner:latest`
+- **Image**: `tc-planner:<dated tag>` (pinned; `latest` is also pushed but not what runs)
 
 ## Sibling project: shopify-jobs
 

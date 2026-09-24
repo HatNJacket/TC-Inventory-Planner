@@ -51,6 +51,15 @@ class Config:
         "COPURCHASE_FUNCTION_URL", "https://func-freshdesk-bot.azurewebsites.net")
     COPURCHASE_FUNCTION_KEY: str = os.getenv("COPURCHASE_FUNCTION_KEY", "")
 
+    # The staff roster (who can be recorded as doing a stock check, a
+    # verification, or a return) is shared with the returns/ops dashboard and
+    # the inventory-verification app. It is stored once, in the dashboard
+    # function's blob, and reached through the same proxy pattern as
+    # co-purchase above so the service token never reaches the browser.
+    DASHBOARD_API_URL: str = os.getenv(
+        "TC_DASHBOARD_URL", "https://tc-dashboard-proxy.azurewebsites.net")
+    DASHBOARD_API_TOKEN: str = os.getenv("TC_DASHBOARD_TOKEN", "")
+
     # Shopify tags that take a product out of replenishment entirely.
     # One-off stock (open box, clearance, used units) is never reordered, so
     # suggesting a purchase quantity for it is always noise. Comma-separated,

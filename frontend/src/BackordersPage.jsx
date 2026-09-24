@@ -78,7 +78,8 @@ export default function BackordersPage({ onToast, onNavigate }) {
   const [sortDir, setSortDir] = useState('asc');
   // PO creation from selected backorder items
   const [selected, setSelected] = useState(new Set());
-  const [creatingOrder, setCreatingOrder] = useState(false);
+  // null | 'selected' | 'combined' — also acts as the busy flag.
+  const [creatingOrder, setCreatingOrder] = useState(null);
   const [vendorSettings, setVendorSettings] = useState([]);
 
   useEffect(() => {
@@ -123,48 +124,142 @@ export default function BackordersPage({ onToast, onNavigate }) {
     return n;
   });
 
-  // Create a PO from the selected backorder items. Quantity per line is the
-  // SHORTFALL (uncovered backordered units = |net_position|) \u2014 exactly what's
-  // needed to cover customer backorders not already on an open PO.
-  const handleCreateOrder = async () => {
-    if (selected.size === 0 || creatingOrder) return;
+  // These POs are single-vendor by design, so resolve the selection to one
+  // vendor up front and refuse mixed selections. Shared by both PO buttons.
+  const resolveSelection = () => {
     const selectedItems = (data?.items || []).filter(i => selected.has(i.sku));
-    if (selectedItems.length === 0) { onToast('No matching items for selection', 'error'); return; }
-
-    // These POs are single-vendor by design \u2014 block mixed selections.
+    if (selectedItems.length === 0) { onToast('No matching items for selection', 'error'); return null; }
     const vendorSet = new Set(selectedItems.map(i => i.vendor || 'Unknown'));
     if (vendorSet.size > 1) {
       onToast(`Selection spans ${vendorSet.size} vendors (${[...vendorSet].slice(0, 3).join(', ')}\u2026). Select items from a single vendor.`, 'error');
-      return;
+      return null;
     }
-    const orderVendor = [...vendorSet][0];
+    return { orderVendor: [...vendorSet][0], selectedItems };
+  };
 
-    setCreatingOrder(true);
+  // Backorder line quantity is the SHORTFALL (uncovered backordered units =
+  // |net_position|) \u2014 exactly what's needed to cover customer backorders
+  // not already on an open PO.
+  const backorderLine = (i) => ({
+    product_title: i.product_title,
+    variant_title: i.variant_title || '',
+    sku: i.sku,
+    barcode: i.barcode || '',
+    ordered_qty: Math.max(1, Math.abs(i.net_position || 0)),
+    unit_cost: i.cost || 0,
+    unit_price: i.price || 0,
+  });
+
+  const replenishLine = (i) => ({
+    product_title: i.product_title,
+    variant_title: i.variant_title || '',
+    sku: i.sku,
+    barcode: i.barcode || '',
+    ordered_qty: i.replenish_qty,
+    unit_cost: i.cost || 0,
+    unit_price: i.price || 0,
+  });
+
+  // Vendors can carry a "don't forget the T-rings" reminder. The Replenishment
+  // page shows it in a modal before creating a PO; surface the text here too
+  // rather than let a full vendor order go out without it.
+  const vendorReminder = (vendorName) => {
+    const v = vendorSettings.find(x => x.name === vendorName);
+    const text = (v?.po_reminder || '').trim();
+    return (text && v?.po_reminder_active !== false) ? text : '';
+  };
+
+  const submitOrder = async (orderVendor, items, notes, successMsg) => {
+    const leadTime = vendorSettings.find(v => v.name === orderVendor)?.lead_time_days || 14;
+    const expectedDate = new Date(Date.now() + leadTime * 86400000).toISOString().split('T')[0];
+    await api.createStockOrder({ vendor: orderVendor, expectedDate, notes, items });
+    onToast(successMsg, 'success');
+    setSelected(new Set());
+    if (onNavigate) onNavigate('stockorders');
+    else fetchData();
+  };
+
+  const handleCreateOrder = async () => {
+    if (selected.size === 0 || creatingOrder) return;
+    const ctx = resolveSelection();
+    if (!ctx) return;
+    const { orderVendor, selectedItems } = ctx;
+
+    setCreatingOrder('selected');
     try {
-      const leadTime = vendorSettings.find(v => v.name === orderVendor)?.lead_time_days || 14;
-      const expectedDate = new Date(Date.now() + leadTime * 86400000).toISOString().split('T')[0];
-      await api.createStockOrder({
-        vendor: orderVendor,
-        expectedDate,
-        notes: 'Created from Backorders page',
-        items: selectedItems.map(i => ({
-          product_title: i.product_title,
-          variant_title: i.variant_title || '',
-          sku: i.sku,
-          barcode: i.barcode || '',
-          ordered_qty: Math.max(1, Math.abs(i.net_position || 0)),
-          unit_cost: i.cost || 0,
-          unit_price: i.price || 0,
-        })),
-      });
-      onToast(`Stock order created for ${orderVendor} with ${selectedItems.length} backordered item(s)`, 'success');
-      setSelected(new Set());
-      if (onNavigate) onNavigate('stockorders');
-      else fetchData();
+      await submitOrder(
+        orderVendor,
+        selectedItems.map(backorderLine),
+        'Created from Backorders page',
+        `Stock order created for ${orderVendor} with ${selectedItems.length} backordered item(s)`);
     } catch (err) {
       onToast(`Failed to create order: ${err.message}`, 'error');
     }
-    setCreatingOrder(false);
+    setCreatingOrder(null);
+  };
+
+  // Same as above, plus everything the Replenishment screen currently suggests
+  // for that vendor \u2014 one shipment instead of a backorder PO now and a
+  // replenishment PO days later.
+  const handleCreateOrderWithReplenishment = async () => {
+    if (selected.size === 0 || creatingOrder) return;
+    const ctx = resolveSelection();
+    if (!ctx) return;
+    const { orderVendor, selectedItems } = ctx;
+
+    setCreatingOrder('combined');
+    try {
+      const res = await api.getReplenishmentAllItems({ vendor: orderVendor });
+      const replItems = res.items || [];
+
+      const key = (sku) => String(sku || '').trim().toUpperCase();
+      const lines = new Map();
+      selectedItems.forEach(i => lines.set(key(i.sku), backorderLine(i)));
+
+      let added = 0, raised = 0;
+      for (const r of replItems) {
+        const qty = Math.max(0, r.replenish_qty || 0);
+        if (!qty) continue;
+        const k = key(r.sku);
+        const existing = lines.get(k);
+        if (existing) {
+          // replenish_qty is projected demand minus current stock, and a
+          // backordered SKU's stock is negative \u2014 so it ALREADY covers the
+          // shortfall. Take the larger of the two; summing would double-order.
+          if (qty > existing.ordered_qty) { existing.ordered_qty = qty; raised++; }
+        } else {
+          lines.set(k, replenishLine(r));
+          added++;
+        }
+      }
+
+      const items = [...lines.values()];
+      const units = items.reduce((t, i) => t + (i.ordered_qty || 0), 0);
+      const cost = items.reduce((t, i) => t + (i.ordered_qty || 0) * (i.unit_cost || 0), 0);
+      const reminder = vendorReminder(orderVendor);
+
+      const msg =
+        `Create a purchase order for ${orderVendor}?\n\n`
+        + `${selectedItems.length} selected backordered item(s)\n`
+        + (added
+            ? `+ ${added} more item(s) currently suggested on Replenishment\n`
+            : `No additional Replenishment suggestions for this vendor right now.\n`)
+        + (raised
+            ? `${raised} overlapping SKU(s) use the larger replenishment quantity, not the sum\n`
+            : '')
+        + `\n= ${items.length} line(s), ${fmtNum(units)} units, ${fmt(cost)}`
+        + (reminder ? `\n\nReminder for ${orderVendor}:\n${reminder}` : '');
+      if (!window.confirm(msg)) { setCreatingOrder(null); return; }
+
+      await submitOrder(
+        orderVendor, items,
+        'Created from Backorders page (selected backorders + replenishment)',
+        `Stock order created for ${orderVendor}: ${selectedItems.length} backordered `
+          + `+ ${added} replenishment item(s)`);
+    } catch (err) {
+      onToast(`Failed to create order: ${err.message}`, 'error');
+    }
+    setCreatingOrder(null);
   };
 
   const items = data?.items || [];
@@ -244,7 +339,7 @@ export default function BackordersPage({ onToast, onNavigate }) {
         <button
           onClick={handleCreateOrder}
           disabled={selected.size === 0 || creatingOrder}
-          title="Create a purchase order from the checked items (single vendor). Quantities = uncovered shortfall."
+          title="Create a purchase order from the checked items only (single vendor). Quantities = uncovered shortfall."
           style={{
             padding: '6px 16px', borderRadius: 6, border: 'none', fontWeight: 600, fontSize: 13,
             backgroundColor: (selected.size > 0 && !creatingOrder) ? 'var(--green)' : '#ccc',
@@ -252,7 +347,27 @@ export default function BackordersPage({ onToast, onNavigate }) {
             display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
           }}
         >
-          {creatingOrder ? 'Creating order\u2026' : `\uFF0B Create PO${selected.size > 0 ? ` (${selected.size})` : ''}`}
+          {creatingOrder === 'selected' ? 'Creating order\u2026' : `\uFF0B Create PO${selected.size > 0 ? ` (${selected.size})` : ''}`}
+        </button>
+
+        <button
+          onClick={handleCreateOrderWithReplenishment}
+          disabled={selected.size === 0 || creatingOrder}
+          title={"Create one purchase order containing the checked backorders PLUS every item "
+                 + "currently suggested for this vendor on the Replenishment screen. "
+                 + "Shows a summary to confirm before anything is created."}
+          style={{
+            padding: '6px 16px', borderRadius: 6, border: '1px solid var(--green)', fontWeight: 600, fontSize: 13,
+            backgroundColor: 'transparent',
+            color: (selected.size > 0 && !creatingOrder) ? 'var(--green)' : '#aaa',
+            borderColor: (selected.size > 0 && !creatingOrder) ? 'var(--green)' : '#ccc',
+            cursor: (selected.size > 0 && !creatingOrder) ? 'pointer' : 'not-allowed',
+            display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
+          }}
+        >
+          {creatingOrder === 'combined'
+            ? 'Building order\u2026'
+            : `\uFF0B PO + replenishment`}
         </button>
       </div>
 

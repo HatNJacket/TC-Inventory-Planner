@@ -31,7 +31,41 @@ const AGING_COLORS = {
 
 // ─── SUMMARY CARDS ──────────────────────────────────────────────
 
-function SummaryCards({ summary }) {
+// Each card doubles as the selector for the chart below it. `metric` names a
+// series in the trend payload; TREND_METRICS says how to plot it.
+const TREND_METRICS = {
+  total: {
+    title: 'Inventory Value Trend', color: '#6366f1', good: 'down',
+    value: (d) => d.total, format: fmt, tick: (v) => `${(v / 1000).toFixed(0)}K`,
+    showTarget: true,
+    overlay: { label: 'Dead Stock', color: '#ef4444', value: (d) => d.dead },
+  },
+  reduction: {
+    title: 'Reduction Needed Trend', color: '#f97316', good: 'down',
+    value: (d, target) => Math.max(0, d.total - target), format: fmt,
+    tick: (v) => `${(v / 1000).toFixed(0)}K`,
+  },
+  dead: {
+    title: 'Dead Stock Trend', color: '#ef4444', good: 'down',
+    value: (d) => d.dead, format: fmt, tick: (v) => `${(v / 1000).toFixed(0)}K`,
+  },
+  turns: {
+    title: 'Inventory Turns Trend', color: '#6366f1', good: 'up',
+    value: (d) => d.turns, format: (v) => `${v.toFixed(1)}x`,
+    tick: (v) => v.toFixed(1),
+  },
+  margin: {
+    title: 'Gross Margin Trend', color: '#22c55e', good: 'up',
+    value: (d) => d.margin_pct, format: (v) => `${v.toFixed(1)}%`,
+    tick: (v) => `${v.toFixed(0)}%`,
+  },
+  on_order: {
+    title: 'On Order Trend', color: '#3b82f6', good: null,
+    value: (d) => d.on_order, format: fmt, tick: (v) => `${(v / 1000).toFixed(0)}K`,
+  },
+};
+
+function SummaryCards({ summary, metric, onSelect }) {
   if (!summary) return null;
 
   const reductionPct = summary.total_inventory_value > 0
@@ -39,36 +73,42 @@ function SummaryCards({ summary }) {
 
   const cards = [
     {
+      metric: 'total',
       label: 'Total Inventory',
       value: fmt(summary.total_inventory_value),
       sub: `Target: ${fmt(summary.target_inventory_value)}`,
       color: summary.reduction_needed > 0 ? '#ef4444' : '#22c55e',
     },
     {
+      metric: 'reduction',
       label: 'Reduction Needed',
       value: fmt(summary.reduction_needed),
       sub: `${reductionPct.toFixed(0)}% of current`,
       color: '#f97316',
     },
     {
+      metric: 'dead',
       label: 'Dead Stock',
       value: fmt(summary.dead_stock_value),
       sub: `${summary.dead_stock_pct}% of inventory`,
       color: '#ef4444',
     },
     {
+      metric: 'turns',
       label: 'Inventory Turns',
       value: summary.inventory_turns.toFixed(1) + 'x',
       sub: `${fmt(summary.revenue_365d)} revenue / yr`,
       color: '#6366f1',
     },
     {
+      metric: 'margin',
       label: 'Gross Margin',
       value: fmtPct(summary.gross_margin_pct),
       sub: fmt(summary.revenue_365d - summary.cogs_365d),
       color: '#22c55e',
     },
     {
+      metric: 'on_order',
       label: 'On Order',
       value: fmt(summary.on_order_value),
       sub: 'incoming purchases',
@@ -78,16 +118,24 @@ function SummaryCards({ summary }) {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 24 }}>
-      {cards.map((c, i) => (
-        <div key={i} style={{
-          backgroundColor: 'var(--card-bg)', border: '1px solid var(--border)',
-          borderRadius: 8, padding: '16px 20px', borderLeft: `4px solid ${c.color}`,
-        }}>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>{c.label}</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)' }}>{c.value}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{c.sub}</div>
-        </div>
-      ))}
+      {cards.map((c) => {
+        const active = c.metric === metric;
+        return (
+          <button key={c.metric} type="button" aria-pressed={active}
+            onClick={() => onSelect?.(c.metric)}
+            title={`Show the ${c.label.toLowerCase()} chart`}
+            style={{
+              backgroundColor: 'var(--card-bg)', border: '1px solid var(--border)',
+              borderRadius: 8, padding: '16px 20px', borderLeft: `4px solid ${c.color}`,
+              font: 'inherit', textAlign: 'left', cursor: 'pointer',
+              boxShadow: active ? `0 0 0 2px ${c.color}` : 'none',
+            }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>{c.label}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)' }}>{c.value}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{c.sub}</div>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -783,14 +831,16 @@ function VendorPurchasingTable({ purchasing, onToast }) {
 
 // ─── TREND CHART ────────────────────────────────────────────────
 
-function TrendChart({ trend, onCapture, capturing }) {
+function TrendChart({ trend, metric = 'total', onCapture, capturing }) {
+  const spec = TREND_METRICS[metric] || TREND_METRICS.total;
+
   if (!trend || !trend.overall || trend.overall.length === 0) {
     return (
       <div style={{
         backgroundColor: 'var(--card-bg)', border: '1px solid var(--border)',
         borderRadius: 8, padding: 20, marginBottom: 24, textAlign: 'center',
       }}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Inventory Value Trend</div>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{spec.title}</div>
         <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
           No trend data yet. Capture your first snapshot to start tracking.
         </p>
@@ -799,7 +849,7 @@ function TrendChart({ trend, onCapture, capturing }) {
           backgroundColor: '#6366f1', color: '#fff', fontWeight: 600, fontSize: 13,
           opacity: capturing ? 0.6 : 1,
         }}>
-          {capturing ? 'Capturing...' : '📸 Capture First Snapshot'}
+          {capturing ? 'Capturing...' : '\U0001F4F8 Capture First Snapshot'}
         </button>
       </div>
     );
@@ -807,28 +857,43 @@ function TrendChart({ trend, onCapture, capturing }) {
 
   const data = trend.overall;
   const target = trend.target || 1000000;
-  const delta = trend.delta;
+
+  const values = data.map(d => spec.value(d, target));
+  const overlayValues = spec.overlay ? data.map(d => spec.overlay.value(d, target)) : [];
+
+  // Change across the window, computed from the plotted series so every metric
+  // gets the same summary line (the API delta only covers total inventory).
+  const first = values[0];
+  const last = values[values.length - 1];
+  const change = last - first;
+  const pctChange = first ? (change / first * 100) : 0;
+  const days = trend.delta?.days
+    ?? Math.round((new Date(data[data.length - 1].date) - new Date(data[0].date)) / 86400000);
+  const changeColor = (spec.good === null || change === 0) ? 'var(--text-muted)'
+    : ((spec.good === 'down') === (change < 0) ? '#16a34a' : '#dc2626');
 
   // Chart dimensions
   const W = 900, H = 220, PAD_L = 70, PAD_R = 20, PAD_T = 10, PAD_B = 30;
   const chartW = W - PAD_L - PAD_R;
   const chartH = H - PAD_T - PAD_B;
 
-  const values = data.map(d => d.total);
-  const minVal = Math.min(...values, target) * 0.95;
-  const maxVal = Math.max(...values) * 1.05;
+  const scaleOver = [...values, ...overlayValues, ...(spec.showTarget ? [target] : [])];
+  const lo = Math.min(...scaleOver);
+  const hi = Math.max(...scaleOver);
+  const pad = (Math.abs(hi) || 1) * 0.05;
+  const minVal = lo > 0 ? lo * 0.95 : lo - pad;
+  const maxVal = hi + pad;
   const range = maxVal - minVal || 1;
 
   const xScale = (i) => PAD_L + (i / (data.length - 1 || 1)) * chartW;
   const yScale = (v) => PAD_T + chartH - ((v - minVal) / range) * chartH;
 
-  // Main line
-  const linePath = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${yScale(d.total).toFixed(1)}`).join(' ');
+  const pathOf = (vals) => vals
+    .map((v, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${yScale(v).toFixed(1)}`)
+    .join(' ');
 
-  // Dead stock area
-  const deadPath = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${yScale(d.dead).toFixed(1)}`).join(' ');
-
-  // Target line
+  const linePath = pathOf(values);
+  const overlayPath = spec.overlay ? pathOf(overlayValues) : null;
   const targetY = yScale(target);
 
   // X-axis labels (show ~6 dates)
@@ -846,12 +911,13 @@ function TrendChart({ trend, onCapture, capturing }) {
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>Inventory Value Trend</div>
-          {delta && (
+          <div style={{ fontSize: 14, fontWeight: 600 }}>{spec.title}</div>
+          {data.length >= 2 && (
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-              {delta.days} days: {' '}
-              <span style={{ color: delta.total_change <= 0 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
-                {delta.total_change <= 0 ? '↓' : '↑'} {fmt(Math.abs(delta.total_change))} ({delta.total_pct_change}%)
+              {days} days: {' '}
+              <span style={{ color: changeColor, fontWeight: 600 }}>
+                {change <= 0 ? '\u2193' : '\u2191'} {spec.format(Math.abs(change))}
+                {first ? ` (${pctChange.toFixed(1)}%)` : ''}
               </span>
             </div>
           )}
@@ -861,7 +927,7 @@ function TrendChart({ trend, onCapture, capturing }) {
           cursor: 'pointer', backgroundColor: 'transparent', color: 'var(--text)',
           fontSize: 12, opacity: capturing ? 0.6 : 1,
         }}>
-          {capturing ? 'Capturing...' : '📸 Capture Snapshot'}
+          {capturing ? 'Capturing...' : '\U0001F4F8 Capture Snapshot'}
         </button>
       </div>
 
@@ -873,29 +939,36 @@ function TrendChart({ trend, onCapture, capturing }) {
               stroke="var(--border)" strokeWidth="0.5" strokeDasharray="4,4" />
             <text x={PAD_L - 8} y={yScale(v) + 4} textAnchor="end"
               fill="var(--text-muted)" fontSize="10">
-              {(v / 1000).toFixed(0)}K
+              {spec.tick(v)}
             </text>
           </g>
         ))}
 
         {/* Target line */}
-        <line x1={PAD_L} y1={targetY} x2={W - PAD_R} y2={targetY}
-          stroke="#22c55e" strokeWidth="1.5" strokeDasharray="6,4" />
-        <text x={W - PAD_R + 4} y={targetY + 4} fill="#22c55e" fontSize="10" fontWeight="600">
-          Target
-        </text>
-
-        {/* Dead stock line */}
-        {data.length > 1 && (
-          <path d={deadPath} fill="none" stroke="#ef4444" strokeWidth="1.5" opacity="0.5" strokeDasharray="3,3" />
+        {spec.showTarget && (
+          <>
+            <line x1={PAD_L} y1={targetY} x2={W - PAD_R} y2={targetY}
+              stroke="#22c55e" strokeWidth="1.5" strokeDasharray="6,4" />
+            <text x={W - PAD_R + 4} y={targetY + 4} fill="#22c55e" fontSize="10" fontWeight="600">
+              Target
+            </text>
+          </>
         )}
 
-        {/* Main inventory line */}
-        <path d={linePath} fill="none" stroke="#6366f1" strokeWidth="2.5" />
+        {/* Secondary series (dead stock alongside total inventory) */}
+        {spec.overlay && data.length > 1 && (
+          <path d={overlayPath} fill="none" stroke={spec.overlay.color}
+            strokeWidth="1.5" opacity="0.5" strokeDasharray="3,3" />
+        )}
+
+        {/* Main line */}
+        <path d={linePath} fill="none" stroke={spec.color} strokeWidth="2.5" />
 
         {/* Data points */}
         {data.map((d, i) => (
-          <circle key={i} cx={xScale(i)} cy={yScale(d.total)} r="3" fill="#6366f1" />
+          <circle key={i} cx={xScale(i)} cy={yScale(values[i])} r="3" fill={spec.color}>
+            <title>{`${d.date}: ${spec.format(values[i])}`}</title>
+          </circle>
         ))}
 
         {/* X-axis labels */}
@@ -912,17 +985,23 @@ function TrendChart({ trend, onCapture, capturing }) {
 
       <div style={{ display: 'flex', gap: 20, marginTop: 8, justifyContent: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{ width: 16, height: 3, backgroundColor: '#6366f1', borderRadius: 2 }} />
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Total Inventory</span>
+          <div style={{ width: 16, height: 3, backgroundColor: spec.color, borderRadius: 2 }} />
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            {spec.title.replace(' Trend', '')}
+          </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{ width: 16, height: 3, backgroundColor: '#ef4444', borderRadius: 2, opacity: 0.5 }} />
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Dead Stock</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{ width: 16, height: 3, backgroundColor: '#22c55e', borderRadius: 2 }} />
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>$1M Target</span>
-        </div>
+        {spec.overlay && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 16, height: 3, backgroundColor: spec.overlay.color, borderRadius: 2, opacity: 0.5 }} />
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{spec.overlay.label}</span>
+          </div>
+        )}
+        {spec.showTarget && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 16, height: 3, backgroundColor: '#22c55e', borderRadius: 2 }} />
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>$1M Target</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -946,6 +1025,7 @@ export default function AnalyticsPage({ view = 'intelligence', onToast }) {
   const [selectedVendor, setSelectedVendor] = useState(null);
   const [loading, setLoading] = useState(true);
   const [capturing, setCapturing] = useState(false);
+  const [trendMetric, setTrendMetric] = useState('total');
 
   useEffect(() => {
     setLoading(true);
@@ -1010,8 +1090,8 @@ export default function AnalyticsPage({ view = 'intelligence', onToast }) {
 
       {view === 'intelligence' && (
         <>
-          <SummaryCards summary={summary} />
-          <TrendChart trend={trend} onCapture={handleCapture} capturing={capturing} />
+          <SummaryCards summary={summary} metric={trendMetric} onSelect={setTrendMetric} />
+          <TrendChart trend={trend} metric={trendMetric} onCapture={handleCapture} capturing={capturing} />
         </>
       )}
 

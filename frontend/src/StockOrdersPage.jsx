@@ -166,11 +166,20 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
     }
   };
 
-  const fetchOrder = useCallback(async () => {
-    setLoading(true);
-    try { const data = await api.getStockOrder(orderId); setOrder(data); setToReceive({}); setHasPendingReceives(false); }
+  // A full load swaps the whole table for a spinner, which unmounts it and
+  // throws the scroll position back to the top. Per-line actions (deleting or
+  // adding a line mid-edit) use { silent: true } instead: the table stays
+  // mounted, the user keeps their place, and receive quantities typed on
+  // other lines survive.
+  const fetchOrder = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
+    try {
+      const data = await api.getStockOrder(orderId);
+      setOrder(data);
+      if (!silent) { setToReceive({}); setHasPendingReceives(false); }
+    }
     catch (err) { onToast('Failed to load order: ' + err.message, 'error'); }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, [orderId, onToast]);
   useEffect(() => { fetchOrder(); }, [fetchOrder]);
 
@@ -343,7 +352,7 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
       if (res.warning) onToast(res.warning, 'error');
       else onToast(`Undid ${res.undone} \u00d7 ${res.sku}`
         + (res.shopify_adjusted ? ` (Shopify \u2212${res.shopify_adjusted})` : ''));
-      if (res.order) setOrder(res.order); else fetchOrder();
+      if (res.order) setOrder(res.order); else fetchOrder({ silent: true });
     } catch (err) {
       onToast('Undo failed: ' + err.message, 'error');
     }
@@ -438,8 +447,21 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
       await api.deleteStockOrderItem(orderId, item.id);
       // Remove this item from edit values too, if we're in edit mode
       setEditValues(prev => { const n = {...prev}; delete n[item.id]; return n; });
+      // ...and from pending receives, so a later save can't post a
+      // receipt against a line that no longer exists.
+      setToReceive(prev => {
+        if (!(item.id in prev)) return prev;
+        const n = { ...prev }; delete n[item.id];
+        setHasPendingReceives(Object.values(n).some(v => v > 0));
+        return n;
+      });
+      // Drop the row now so the table doesn't shift after a delay, then
+      // refresh quietly for server-computed totals.
+      setOrder(prev => prev
+        ? { ...prev, items: (prev.items || []).filter(i => i.id !== item.id) }
+        : prev);
       onToast(`Removed ${item.sku}`);
-      fetchOrder();
+      fetchOrder({ silent: true });
     } catch (err) {
       onToast('Delete failed: ' + err.message, 'error');
     }
@@ -912,7 +934,7 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
                               fontSize: 11, lineHeight: 1.3, padding: '1px 5px',
                               cursor: undoing === item.id ? 'default' : 'pointer',
                               opacity: undoing === item.id ? 0.5 : 1,
-                            }}>\u21b6</button>
+                            }}>{'\u21b6'}</button>
                         )}
                       </span>
                     )}
@@ -941,12 +963,47 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
                     )}
                   </td>
                   <td style={{ padding: '12px', textAlign: 'center' }}>
-                    {!editMode && remaining > 0 && order.status !== 'closed' ? (
+                    {!editMode && order.status !== 'closed' ? (
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-                        <button onClick={() => fillToReceive(item.id, remaining)} title="Fill remaining" style={{ width: 28, height: 28, borderRadius: 14, border: '1px solid var(--green)', backgroundColor: 'transparent', color: 'var(--green)', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{'\u2192'}</button>
-                        <input type="number" value={toRecQty || ''} min={0} max={remaining} onChange={e => updateToReceive(item.id, e.target.value)} style={{ width: 55, textAlign: 'right', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', fontSize: 13 }} />
+                        {remaining > 0 ? (
+                          <button onClick={() => fillToReceive(item.id, remaining)} title="Fill remaining" style={{ width: 28, height: 28, borderRadius: 14, border: '1px solid var(--green)', backgroundColor: 'transparent', color: 'var(--green)', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{'\u2192'}</button>
+                        ) : (
+                          <span title={remaining < 0
+                            ? `Fully received — ${Math.abs(remaining)} more than ordered`
+                            : 'Fully received'}
+                            style={{ color: 'var(--green)', fontSize: 14 }}>
+                            {'\u2713'}
+                            {remaining < 0 && (
+                              <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 3 }}>
+                                {`+${Math.abs(remaining)}`}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                        {/* Deliberately no max. Suppliers over-ship, substitutions arrive as
+                            extra units, and a second box can turn up after a line is already
+                            complete — neither the API nor the database caps received_qty,
+                            so this cell should not either. */}
+                        <input type="number" value={toRecQty || ''} min={0}
+                          title={remaining > 0
+                            ? 'Units received now — not capped at the quantity ordered'
+                            : 'This line is already complete — enter more units to record an over-receipt'}
+                          onChange={e => updateToReceive(item.id, e.target.value)}
+                          style={{ width: 55, textAlign: 'right', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', fontSize: 13 }} />
                       </div>
-                    ) : remaining === 0 && !editMode ? <span style={{ color: 'var(--green)', fontSize: 14 }}>{'\u2713'}</span> : null}
+                    ) : remaining <= 0 && !editMode ? (
+                      <span title={remaining < 0
+                        ? `Fully received — ${Math.abs(remaining)} more than ordered`
+                        : 'Fully received'}
+                        style={{ color: 'var(--green)', fontSize: 14 }}>
+                        {'\u2713'}
+                        {remaining < 0 && (
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 3 }}>
+                            {`+${Math.abs(remaining)}`}
+                          </span>
+                        )}
+                      </span>
+                    ) : null}
                   </td>
                   <td style={{ padding: '12px', textAlign: 'right' }}>
                     {editMode ? <input type="number" step="0.01" value={ev?.unit_cost ?? item.unit_cost} min={0} onChange={e => setEditValues(p => ({...p,[item.id]:{...p[item.id],unit_cost:parseFloat(e.target.value)||0}}))} style={{ width: 80, textAlign: 'right', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', fontSize: 13 }} /> : fmt(item.unit_cost||0)}
@@ -1036,7 +1093,7 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
           orderId={orderId}
           orderVendor={order.vendor}
           onClose={() => setShowAddItem(false)}
-          onAdded={() => { setShowAddItem(false); fetchOrder(); }}
+          onAdded={() => { setShowAddItem(false); fetchOrder({ silent: true }); }}
           onToast={onToast}
         />
       )}

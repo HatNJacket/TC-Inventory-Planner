@@ -4001,7 +4001,8 @@ async def vendors_upload_pricelist(
             map_cad_column=map_cad_column,
             coo_column=coo_column,
         )
-        return result
+        # Flag "new" SKUs that already exist as draft/archived products.
+        return await _annotate_inactive_matches(vendor, result)
     except Exception as e:
         logger.error(f"Pricelist upload error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -4089,7 +4090,7 @@ async def vendors_recompare_pricelist(vendor: str, token: str = Depends(verify_t
         result = recompare_stored_pricelist(db, vendor)
         if not result:
             raise HTTPException(status_code=404, detail="No stored pricelist or column mappings for this vendor")
-        return result
+        return await _annotate_inactive_matches(vendor, result)
     except HTTPException:
         raise
     except Exception as e:
@@ -4948,6 +4949,228 @@ async def copurchase_status(token: str = Depends(verify_token)):
     except Exception as e:
         logger.error(f"Co-purchase status error: {e}", exc_info=True)
         raise HTTPException(status_code=502, detail=str(e))
+
+
+# ─── STAFF ROSTER ────────────────────────────────────────────────────────
+# One list of names for every app that asks "who did this?" — TC-Planner's
+# stock checks, the returns app, and the inventory-verification app. It used
+# to be hardcoded separately in all three, which is how Clay and Nick ended
+# up selectable in the verification UI while its API still rejected them.
+#
+# The list lives in the dashboard function's blob (it already had storage and
+# an editor); TC-Planner proxies so the service token stays server-side.
+
+STAFF_FALLBACK = ["Matt", "Clay", "Steve", "Nick", "Alex"]
+MAX_STAFF_NAMES = 50
+
+
+class StaffUpdate(BaseModel):
+    staff: List[str]
+
+
+def _dashboard_headers() -> dict:
+    if not config.DASHBOARD_API_TOKEN:
+        raise HTTPException(
+            503, "TC_DASHBOARD_TOKEN is not configured — the staff roster "
+                 "cannot be reached")
+    return {"Authorization": f"Bearer {config.DASHBOARD_API_TOKEN}",
+            "Content-Type": "application/json"}
+
+
+@app.get("/api/staff")
+async def api_get_staff(token: str = Depends(verify_token)):
+    """The shared staff roster.
+
+    Never fails hard: a dropdown with stale names is far better than a
+    dropdown with none, so an unreachable store falls back to the names
+    TC-Planner used before the roster was centralised.
+    """
+    url = config.DASHBOARD_API_URL.rstrip("/") + "/api/staff"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=_dashboard_headers())
+        if resp.status_code >= 400:
+            raise RuntimeError(f"roster store returned {resp.status_code}")
+        data = resp.json()
+        names = [str(n).strip() for n in (data.get("staff") or []) if str(n).strip()]
+        if not names:
+            raise RuntimeError("roster store returned an empty list")
+        return {"staff": names, "source": data.get("source", "stored")}
+    except Exception as e:
+        logger.warning(f"Staff roster unavailable, serving fallback: {e}")
+        return {"staff": list(STAFF_FALLBACK), "source": "fallback",
+                "error": str(e)[:200]}
+
+
+@app.put("/api/staff")
+async def api_update_staff(data: StaffUpdate, token: str = Depends(verify_token)):
+    """Replace the roster. Validated here so a bad list never reaches the store."""
+    seen, cleaned = set(), []
+    for raw in data.staff:
+        name = str(raw).strip()[:60]
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        cleaned.append(name)
+    if not cleaned:
+        raise HTTPException(400, "The roster needs at least one name")
+    if len(cleaned) > MAX_STAFF_NAMES:
+        raise HTTPException(400, f"At most {MAX_STAFF_NAMES} names")
+
+    url = config.DASHBOARD_API_URL.rstrip("/") + "/api/staff"
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(url, headers=_dashboard_headers(),
+                                     json={"staff": cleaned})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Staff roster save failed: {e}", exc_info=True)
+        raise HTTPException(502, f"Could not reach the roster store: {e}")
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Roster store returned {resp.status_code}: "
+                                 f"{resp.text[:200]}")
+    return {"staff": cleaned, "saved": True}
+
+
+# ─── DRAFT / ARCHIVED MATCHES IN PRICELIST COMPARISONS ───────────────────
+# The comparison reads product_velocity_cache, which only ever holds ACTIVE
+# products (the refresh query filters on status:active). So a pricelist SKU
+# that already exists as a draft or archived product looks brand new, and
+# the operator is offered "create a draft" for something that is already
+# there. Annotating those rows lets them activate the existing product
+# instead of creating a duplicate.
+
+async def _inactive_products_by_sku(vendor: str) -> dict:
+    """{normalized_sku: {...}} for this vendor's non-active products."""
+    from .shopify_client import normalize_sku
+
+    # Escape for a quoted Shopify search term; vendor names contain spaces
+    # and apostrophes ("Bob's Knobs").
+    safe_vendor = str(vendor or "").replace("\\", "\\\\").replace('"', '\\"')
+    query = """
+    query($after: String, $q: String!) {
+      products(first: 100, after: $after, query: $q) {
+        pageInfo { hasNextPage endCursor }
+        edges { node {
+          id title handle status
+          variants(first: 50) { edges { node { id sku } } }
+        } }
+      }
+    }
+    """
+    search = 'vendor:"%s" AND (status:draft OR status:archived)' % safe_vendor
+    by_sku = {}
+    after = None
+    while True:
+        data = await shopify_client._query(query, {"after": after, "q": search})
+        block = data.get("products") or {}
+        for edge in block.get("edges", []):
+            node = edge["node"]
+            for ve in (node.get("variants") or {}).get("edges", []):
+                sku = (ve["node"].get("sku") or "").strip()
+                if not sku:
+                    continue
+                by_sku[normalize_sku(sku).upper()] = {
+                    "shopify_status": node.get("status"),
+                    "shopify_title": node.get("title"),
+                    "shopify_handle": node.get("handle"),
+                    "shopify_product_id": str(node["id"]).split("/")[-1],
+                    "shopify_sku": sku,
+                }
+        page = block.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        after = page.get("endCursor")
+    return by_sku
+
+
+async def _annotate_inactive_matches(vendor: str, result: dict) -> dict:
+    """Tag 'new' pricelist rows that already exist as draft/archived."""
+    items = (result or {}).get("in_pricelist_only") or []
+    if not items:
+        return result
+    try:
+        from .shopify_client import normalize_sku
+        by_sku = await _inactive_products_by_sku(vendor)
+        if not by_sku:
+            return result
+        found = 0
+        for item in items:
+            key = normalize_sku(item.get("supplier_sku") or "").upper()
+            hit = by_sku.get(key)
+            if hit:
+                item.update(hit)
+                found += 1
+        result["inactive_match_count"] = found
+        if found:
+            logger.info("Pricelist compare for %s: %d 'new' SKU(s) already exist "
+                        "as draft/archived products", vendor, found)
+    except Exception as e:
+        # Never fail the comparison over this — it is an annotation.
+        logger.warning(f"Could not check draft/archived products for {vendor}: {e}")
+    return result
+
+
+class ActivateProductRequest(BaseModel):
+    """publish=False leaves the product active but off the storefront."""
+    publish: bool = True
+
+
+@app.post("/api/products/{product_id}/activate")
+async def products_activate(
+    product_id: str, data: ActivateProductRequest = ActivateProductRequest(),
+    token: str = Depends(verify_token),
+    user: str = Depends(current_user),
+):
+    """Set a draft/archived product to ACTIVE, and publish it by default.
+
+    Activating alone is rarely enough: an ACTIVE product that was never
+    published still 404s on the storefront, which is a confusing half-done
+    state to leave behind.
+    """
+    gid = product_id if str(product_id).startswith("gid://") else \
+        "gid://shopify/Product/%s" % product_id
+    try:
+        data_resp = await shopify_client._query("""
+        mutation activate($input: ProductInput!) {
+          productUpdate(input: $input) {
+            product { id title status handle }
+            userErrors { field message }
+          }
+        }""", {"input": {"id": gid, "status": "ACTIVE"}})
+
+        block = data_resp.get("productUpdate") or {}
+        errs = block.get("userErrors") or []
+        if errs:
+            raise HTTPException(status_code=400, detail=str(errs[:2]))
+        product = block.get("product") or {}
+
+        published = 0
+        publish_error = None
+        if data.publish:
+            try:
+                published = await shopify_client._publish_to_all_channels(gid)
+            except Exception as e:
+                publish_error = str(e)[:200]
+                logger.warning("Activated %s but publishing failed: %s", gid, e)
+
+        logger.info("Product %s activated by %s (published to %d channel(s))",
+                    product.get("title"), user, published)
+        return {
+            "status": "ok",
+            "product_id": str(product.get("id") or gid).split("/")[-1],
+            "title": product.get("title"),
+            "handle": product.get("handle"),
+            "product_status": product.get("status"),
+            "publications_published": published,
+            "publication_error": publish_error,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Activate product error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ─── SKU LOOKUP ──────────────────────────────────────────────────
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import * as api from './api';
 import { queueTestLabel } from './labelPrinter';
+import { refreshStaffRoster } from './staffRoster';
 
 const s = {
   card: { backgroundColor: 'var(--card-bg, #fff)', border: '1px solid var(--border)', borderRadius: 8, padding: '20px 24px', marginBottom: 16 },
@@ -169,6 +170,8 @@ export default function SettingsPage({ onToast }) {
         </div>
       </div>
 
+      <StaffRosterPanel onToast={onToast} cardStyle={s.card} btnStyle={s.btn} />
+
       <BarcodeLabelDiagnostics onToast={onToast} cardStyle={s.card} btnStyle={s.btn} />
 
       <CoPurchasePanel onToast={onToast} cardStyle={s.card} btnStyle={s.btn} />
@@ -185,6 +188,185 @@ export default function SettingsPage({ onToast }) {
           <strong>Stop Buying</strong> is independent — any item with days-of-stock above its threshold appears there, regardless of velocity or margin. It's a pure "sitting on inventory" signal.
         </div>
       </div>
+    </div>
+  );
+}
+
+// The staff roster: one list of names shared by TC-Planner's stock checks,
+// the returns app and the inventory-verification app. They each used to
+// hardcode their own list, which is how a name could be selectable in one
+// app and rejected by another's API.
+const moveBtn = (disabled) => ({
+  background: 'none', border: '1px solid var(--border)', borderRadius: 4,
+  cursor: disabled ? 'default' : 'pointer', color: 'var(--text-muted)',
+  fontSize: 9, lineHeight: 1, padding: '3px 5px', opacity: disabled ? 0.3 : 1,
+});
+
+function StaffRosterPanel({ onToast, cardStyle, btnStyle }) {
+  const [names, setNames] = useState(null);
+  const [source, setSource] = useState('');
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api.getStaff();
+      setNames(d.staff || []);
+      setSource(d.source || '');
+      setDirty(false);
+    } catch (e) {
+      onToast?.('Could not load staff names: ' + e.message, 'error');
+      setNames([]);
+    }
+  }, [onToast]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const add = () => {
+    const name = draft.trim();
+    if (!name) return;
+    if (names.some(n => n.toLowerCase() === name.toLowerCase())) {
+      onToast?.(`"${name}" is already on the list`, 'error');
+      return;
+    }
+    setNames([...names, name]);
+    setDraft('');
+    setDirty(true);
+  };
+
+  const remove = (idx) => {
+    setNames(names.filter((_, i) => i !== idx));
+    setDirty(true);
+  };
+
+  // Stored order is the order the dropdowns render in, so let people put the
+  // names they pick most often at the top instead of scrolling past leavers.
+  const move = (idx, delta) => {
+    const target = idx + delta;
+    if (target < 0 || target >= names.length) return;
+    const next = [...names];
+    [next[idx], next[target]] = [next[target], next[idx]];
+    setNames(next);
+    setDirty(true);
+  };
+
+  const sortAlpha = () => {
+    setNames([...names].sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' })));
+    setDirty(true);
+  };
+
+  const save = async () => {
+    if (!names.length) {
+      onToast?.('Keep at least one name on the roster', 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.updateStaff(names);
+      // Refresh the module cache so open stock-check dropdowns update without
+      // a page reload.
+      await refreshStaffRoster();
+      onToast?.('Staff names saved', 'success');
+      await load();
+    } catch (e) {
+      onToast?.('Save failed: ' + e.message, 'error');
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div style={cardStyle}>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Staff Names</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 16 }}>
+        Who can be recorded as performing a stock check here, a stock verification
+        in the Inventory Verification app, and a return or vendor case in the
+        Returns app. All three read this one list — a name removed here stops
+        appearing everywhere. Editing names does not change history already
+        recorded against them. The order below is the order the dropdowns
+        show, so put the people picked most often at the top.
+      </div>
+
+      {source === 'fallback' && (
+        <div style={{
+          fontSize: 11, color: '#92400e', backgroundColor: '#fef3c7',
+          border: '1px solid #fcd34d', borderRadius: 6, padding: '8px 10px',
+          marginBottom: 12,
+        }}>
+          The shared roster could not be reached, so these are TC-Planner's
+          built-in defaults. Saving is disabled until it is reachable again.
+        </div>
+      )}
+
+      {names === null ? (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading...</div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 14, maxWidth: 340 }}>
+            {names.length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                No names yet — add at least one.
+              </div>
+            )}
+            {names.map((n, i) => (
+              <div key={`${n}-${i}`} style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                border: '1px solid var(--border)', borderRadius: 6,
+                padding: '5px 8px 5px 10px', fontSize: 13,
+              }}>
+                <span style={{ width: 16, color: 'var(--text-muted)', fontSize: 11 }}>{i + 1}</span>
+                <span style={{ flex: 1, fontWeight: 600 }}>{n}</span>
+                <button onClick={() => move(i, -1)} disabled={i === 0}
+                  title={i === 0 ? 'Already first' : `Move ${n} up`} style={moveBtn(i === 0)}>
+                  {'\u25b2'}
+                </button>
+                <button onClick={() => move(i, 1)} disabled={i === names.length - 1}
+                  title={i === names.length - 1 ? 'Already last' : `Move ${n} down`}
+                  style={moveBtn(i === names.length - 1)}>
+                  {'\u25bc'}
+                </button>
+                <button onClick={() => remove(i)} title={`Remove ${n}`}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: '#c0392b', fontSize: 15, lineHeight: 1, padding: '0 2px',
+                  }}>{'\u00d7'}</button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+              placeholder="Add a name"
+              maxLength={60}
+              style={{
+                padding: '7px 10px', borderRadius: 6, border: '1px solid var(--border)',
+                fontSize: 13, width: 180, boxSizing: 'border-box',
+              }} />
+            <button onClick={add} disabled={!draft.trim()} style={btnStyle()}>Add</button>
+            <button onClick={sortAlpha} disabled={names.length < 2} style={btnStyle()}
+              title="Sort the list alphabetically">A{'\u2013'}Z</button>
+          </div>
+
+          <div style={{
+            display: 'flex', gap: 8, marginTop: 16, paddingTop: 16,
+            borderTop: '1px solid var(--border)',
+          }}>
+            <button onClick={save} disabled={!dirty || saving || source === 'fallback'}
+              style={btnStyle('primary')}>
+              {saving ? 'Saving...' : 'Save Names'}
+            </button>
+            <button onClick={load} disabled={!dirty || saving} style={btnStyle()}>Discard</button>
+            {dirty && (
+              <span style={{ alignSelf: 'center', fontSize: 11, color: '#f59e0b', fontWeight: 600, marginLeft: 8 }}>
+                {'\u2022'} unsaved changes
+              </span>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -886,7 +886,7 @@ def get_inventory_trend(db, days: int = 90) -> Dict:
         cursor.execute("""
             SELECT snapshot_date, total_inventory_value, dead_stock_value,
                    slow_stock_value, overstock_value, on_order_value,
-                   revenue_365d, inventory_turns
+                   revenue_365d, inventory_turns, cogs_365d
             FROM inventory_snapshots
             WHERE snapshot_date >= DATEADD(day, ?, GETDATE())
             ORDER BY snapshot_date ASC
@@ -894,6 +894,8 @@ def get_inventory_trend(db, days: int = 90) -> Dict:
 
         overall = []
         for row in cursor.fetchall():
+            revenue = _f(row[6])
+            cogs = _f(row[8])
             overall.append({
                 'date': row[0].isoformat(),
                 'total': _f(row[1]),
@@ -901,8 +903,12 @@ def get_inventory_trend(db, days: int = 90) -> Dict:
                 'slow': _f(row[3]),
                 'overstock': _f(row[4]),
                 'on_order': _f(row[5]),
-                'revenue_365d': _f(row[6]),
+                'revenue_365d': revenue,
                 'turns': _f(row[7]),
+                'cogs_365d': cogs,
+                # Derived here so the chart can plot margin without repeating
+                # the divide-by-zero guard on the client.
+                'margin_pct': round((revenue - cogs) / revenue * 100, 1) if revenue > 0 else 0,
             })
 
         # Vendor trends (top 15 by latest inventory value)

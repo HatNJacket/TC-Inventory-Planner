@@ -379,6 +379,18 @@ export async function updateThresholds(updates) {
   });
 }
 
+// Staff roster — shared with the returns and inventory-verification apps.
+export async function getStaff() {
+  return apiFetch('/staff');
+}
+
+export async function updateStaff(staff) {
+  return apiFetch('/staff', {
+    method: 'PUT',
+    body: JSON.stringify({ staff }),
+  });
+}
+
 // ─── PO Comparison (IP vs TC) ─────────────────────────────────
 
 export async function comparePO(file, options = {}) {
@@ -1265,5 +1277,13 @@ export async function undoReceive(orderId, itemId, qty = null) {
   return apiFetch(`/stock-orders/${orderId}/items/${itemId}/undo-receive`, {
     method: 'POST',
     body: JSON.stringify(qty ? { qty } : {}),
+  });
+}
+
+// Set a draft/archived product to Active. Publishes to all sales channels
+// by default — an active but unpublished product still 404s on the storefront.
+export async function activateProduct(productId, publish = true) {
+  return apiFetch(`/products/${encodeURIComponent(productId)}/activate`, {
+    method: 'POST', body: JSON.stringify({ publish }),
   });
 }

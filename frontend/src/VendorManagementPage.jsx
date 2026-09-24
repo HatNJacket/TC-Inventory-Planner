@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import * as api from './api';
+import { useStaffRoster } from './staffRoster';
 import ScrapeConfigEditor from './ScrapeConfigEditor';
 import SkuMappingsPanel from './SkuMappingsPanel';
 
@@ -499,6 +500,29 @@ function PricelistModal({ vendor, initialResult, onDone, onClose, onToast }) {
   const [draftSelected, setDraftSelected] = useState(new Set());
   const [drafting, setDrafting] = useState(false);
   const [creatingDraft, setCreatingDraft] = useState(new Set());
+  // Some "new" pricelist rows already exist in Shopify as draft or archived
+  // products. Activating the existing one avoids creating a duplicate SKU.
+  const [activating, setActivating] = useState(new Set());
+  const [activated, setActivated] = useState(new Set());
+  const handleActivateProduct = async (item) => {
+    const label = item.shopify_title || item.supplier_sku;
+    if (!window.confirm(
+      `Activate "${label}"?\n\nIt is currently ${String(item.shopify_status).toLowerCase()} `
+      + `in Shopify. This sets it to Active and publishes it to your sales channels.`)) return;
+    setActivating(prev => new Set(prev).add(item.supplier_sku));
+    try {
+      const res = await api.activateProduct(item.shopify_product_id);
+      setActivated(prev => new Set(prev).add(item.supplier_sku));
+      let msg = `Activated ${res.title || label}`;
+      if (res.publications_published) msg += ` · published to ${res.publications_published} channel(s)`;
+      if (res.publication_error) msg += ` | not published: ${res.publication_error}`;
+      onToast?.(msg, res.publication_error ? 'error' : 'success');
+    } catch (err) {
+      onToast?.('Activate failed: ' + err.message, 'error');
+    }
+    setActivating(prev => { const n = new Set(prev); n.delete(item.supplier_sku); return n; });
+  };
+
   const [draftUrl, setDraftUrl] = useState(null);
   const [draftUrlSku, setDraftUrlSku] = useState(null);
   // Tracks which bulk Shopify update is in progress so we can show
@@ -1139,6 +1163,19 @@ function PricelistModal({ vendor, initialResult, onDone, onClose, onToast }) {
                         <tr>
                           <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontSize: 11 }}>
                             {item.supplier_sku}
+                            {item.shopify_status && (
+                              <div style={{ marginTop: 3 }}
+                                   title={`Already in Shopify as "${item.shopify_title}" (${item.shopify_status.toLowerCase()}). Activate it rather than creating a duplicate.`}>
+                                <span style={{
+                                  fontSize: 9, fontWeight: 700, letterSpacing: 0.3,
+                                  padding: '1px 5px', borderRadius: 3, color: '#fff',
+                                  backgroundColor: item.shopify_status === 'DRAFT' ? '#6366f1' : '#78716c',
+                                }}>{item.shopify_status}</span>
+                                <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 4 }}>
+                                  exists in Shopify
+                                </span>
+                              </div>
+                            )}
                             {item.suggestions?.length > 0 && (
                               <div style={{ fontSize: 10, color: '#6366f1', marginTop: 2 }}>
                                 {item.suggestions.length} suggested match{item.suggestions.length === 1 ? '' : 'es'}
@@ -1150,7 +1187,25 @@ function PricelistModal({ vendor, initialResult, onDone, onClose, onToast }) {
                           <td style={{ padding: '4px 8px' }}>{fmt(item.cost_cad)}</td>
                           <td style={{ padding: '4px 8px', fontWeight: 600 }}>{item.sale_price_cad ? fmt(item.sale_price_cad) : '—'}</td>
                           <td style={{ padding: '4px 8px', textAlign: 'right', minWidth: 220 }}>
-                            {creatingDraft.has(item.supplier_sku) ? (
+                            {item.shopify_status && !activated.has(item.supplier_sku) ? (
+                              <button
+                                onClick={() => handleActivateProduct(item)}
+                                disabled={activating.has(item.supplier_sku)}
+                                title={`Set "${item.shopify_title}" to Active and publish it`}
+                                style={{
+                                  padding: '3px 10px', borderRadius: 4, border: 'none',
+                                  backgroundColor: '#22c55e', color: '#fff',
+                                  fontSize: 11, fontWeight: 600,
+                                  cursor: activating.has(item.supplier_sku) ? 'default' : 'pointer',
+                                  opacity: activating.has(item.supplier_sku) ? 0.6 : 1,
+                                }}>
+                                {activating.has(item.supplier_sku) ? 'Activating…' : 'Activate existing'}
+                              </button>
+                            ) : activated.has(item.supplier_sku) ? (
+                              <span style={{ fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>
+                                ✓ Activated
+                              </span>
+                            ) : creatingDraft.has(item.supplier_sku) ? (
                               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Creating draft...</span>
                             ) : draftUrl !== null && draftUrlSku === item.supplier_sku ? (
                               <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -1942,16 +1997,15 @@ function VendorSaleModal({ vendor, onClose, onToast }) {
 const STOCK_CHECK_WARN_DAYS = 180;
 const STOCK_CHECK_STALE_DAYS = 365;
 
-// Who can be recorded as having done a stock count. Kept separate from the
-// API token list on purpose: counts are often entered by one person on
-// another's behalf, and not everyone who counts has a login.
-const STOCK_CHECK_STAFF = ['Matt', 'Clay', 'Stephen', 'Nick', 'Alex'];
+// Who can be recorded as having done a stock count comes from the shared
+// staff roster (Settings -> Staff Names), which the returns and
+// inventory-verification apps read too. Kept separate from the API token
+// list on purpose: counts are often entered by one person on another's
+// behalf, and not everyone who counts has a login.
 
-// Login tokens and the roster spell one person differently, so map the token
-// identity onto the roster name — otherwise signing in as Steve leaves the
-// selector blank and the one-click case stops working for him.
-const STOCK_CHECK_ALIASES = { Steve: 'Stephen' };
-const rosterName = (name) => STOCK_CHECK_ALIASES[name] || name;
+// Login names and roster names are the same strings today, so the signed-in
+// user can be matched against the roster directly. Non-person tokens (the
+// RFID station) simply never match, which is what we want.
 
 function daysSinceDate(iso) {
   if (!iso) return null;
@@ -1962,15 +2016,23 @@ function daysSinceDate(iso) {
 
 function StockCheckCell({ vendor, onChecked, currentUser }) {
   const [busy, setBusy] = useState(false);
+  const staff = useStaffRoster();
   // Default to whoever is recorded, else the signed-in user when they are on
   // the roster, so the common "I counted it myself" case is one click.
   const [who, setWho] = useState(() => {
     const recorded = vendor.last_stock_check_by;
-    if (recorded && STOCK_CHECK_STAFF.includes(recorded)) return recorded;
-    if (recorded) return recorded;               // historic name (e.g. Danielle)
-    const mine = rosterName(currentUser);
-    return STOCK_CHECK_STAFF.includes(mine) ? mine : '';
+    if (recorded) return recorded;               // includes historic names
+    return '';
   });
+
+  // The roster arrives after the first render, so the "it was me" default
+  // has to wait for it — but never overwrite a name already recorded or a
+  // choice the user has just made.
+  useEffect(() => {
+    if (who || vendor.last_stock_check_by) return;
+    const mine = currentUser;
+    if (mine && staff.includes(mine)) setWho(mine);
+  }, [staff, currentUser, who, vendor.last_stock_check_by]);
   const days = daysSinceDate(vendor.last_stock_check_date);
 
   let color = 'var(--text-muted)', label = 'Never';
@@ -2037,9 +2099,9 @@ function StockCheckCell({ vendor, onChecked, currentUser }) {
           cursor: busy ? 'default' : 'pointer',
         }}>
         <option value="">— who? —</option>
-        {STOCK_CHECK_STAFF.map(n => <option key={n} value={n}>{n}</option>)}
+        {staff.map(n => <option key={n} value={n}>{n}</option>)}
         {/* Keep a historic name selectable so re-saving does not silently lose it */}
-        {who && !STOCK_CHECK_STAFF.includes(who) && <option value={who}>{who}</option>}
+        {who && !staff.includes(who) && <option value={who}>{who}</option>}
       </select>
     </td>
   );
