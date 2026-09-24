@@ -6,9 +6,33 @@
 const API_BASE = '/api';
 let shippingUserId = '';
 export function setShippingUser(user) { shippingUserId = user?.id || ''; }
-export function getShippingUsers() { return apiFetch('/shipping/users'); }
-export function createShippingUser(user) {
-  return apiFetch('/shipping/users', { method: 'POST', body: JSON.stringify(user) });
+const SHIPPING_USERS_CACHE = 'tc_shipping_users_v1';
+let usersRequest = null;
+export function getCachedShippingUsers() {
+  try {
+    const users = JSON.parse(localStorage.getItem(SHIPPING_USERS_CACHE));
+    return Array.isArray(users) ? users.filter(u => u && typeof u.id === 'string' && typeof u.name === 'string') : [];
+  } catch { return []; }
+}
+function cacheShippingUsers(users) {
+  try { localStorage.setItem(SHIPPING_USERS_CACHE, JSON.stringify(users)); } catch { /* Storage may be unavailable. */ }
+}
+export function getShippingUsers() {
+  if (!usersRequest) {
+    usersRequest = apiFetch('/shipping/users', { signal: AbortSignal.timeout(10000) })
+      .then(result => { cacheShippingUsers(result.users); return result; })
+      .finally(() => { usersRequest = null; });
+  }
+  return usersRequest;
+}
+export async function createShippingUser(user) {
+  const result = await apiFetch('/shipping/users', { method: 'POST', body: JSON.stringify(user) });
+  cacheShippingUsers([...getCachedShippingUsers().filter(u => u.id !== result.user.id), result.user]);
+  return result;
+}
+
+export function loadCustomShippingShipment(items, reference) {
+  return apiFetch('/shipping/custom-shipment', { method: 'POST', body: JSON.stringify({ items, reference }) });
 }
 
 // Token is stored in localStorage after login

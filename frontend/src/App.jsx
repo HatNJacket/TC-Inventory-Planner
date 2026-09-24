@@ -1311,6 +1311,8 @@ export default function App() {
   useEffect(() => {
     if (!authenticated) { setCurrentUser(null); return; }
     api.whoami().then(r => setCurrentUser(r?.user || null)).catch(() => setCurrentUser(null));
+    // Warm the small profile list before the user opens Shipping.
+    api.getShippingUsers().catch(() => {});
   }, [authenticated]);
 
   // Wrapped navigation handler: if the user clicks Stock Orders while

@@ -70,6 +70,15 @@ build; frontend edits refresh automatically and Python edits restart the API.
 It uses the same `backend/.env` and local shipping data as your manual launch.
 The existing live-database/Shopify precautions below still apply.
 
+In **Shipping → Custom Shipment**, search by SKU or product name, add products,
+set quantities, and click **Load Custom Shipment**, then **Build Packing Plan**.
+This uses the Package Database (including every part of multi-package products)
+without fetching or creating a Shopify order. Up to 50 SKUs / 100 product units
+can be loaded. Editing the selection clears the old plan; switching shipping
+tabs preserves both the custom shipment and the separate Shopify order.
+Warehouse profiles are cached on this browser and refreshed in the background;
+staff still choose their profile each time they enter Shipping.
+
 Double-click `run-local.bat`. That's it. On the first run it:
 
 1. Installs Python (if missing), ODBC Driver 18 for SQL Server and

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as api from './api';
 import ShippingSignIn from './ShippingSignIn';
+import CustomShipmentBuilder from './CustomShipmentBuilder';
 
 const GREEN = '#2aad51';
 const VERIFIED = new Set(['Verified — Warehouse', 'Confirmed — Vendor/Label']);
@@ -145,7 +146,7 @@ function combinationText(combo) {
   return 'New / unproven combination';
 }
 
-function PackingView({ onToast, currentUser }) {
+function PackingView({ onToast, currentUser, custom = false }) {
   const [orderNumber,setOrderNumber]=useState(''); const [order,setOrder]=useState(null); const [rows,setRows]=useState([]); const [loading,setLoading]=useState(false); const [error,setError]=useState('');
   const [plan,setPlan]=useState(null); const [planLoading,setPlanLoading]=useState(false); const [carrierData,setCarrierData]=useState({}); const [fitDraft,setFitDraft]=useState({}); const [notes,setNotes]=useState({}); const [detailsOpen,setDetailsOpen]=useState(false); const [finalWeights,setFinalWeights]=useState({}); const firstLookup=useRef(true);
   const destination=order?.shipping_address||{}; const readiness=order?.packing_readiness||{};
@@ -172,6 +173,18 @@ function PackingView({ onToast, currentUser }) {
     try { const result=await api.getShippingOrder(value); setOrder(result); const grouped=groupPhysicalPackages(result.physical_packages); setRows(grouped); setFitDraft({}); setFinalWeights({}); await refreshCarrierData(grouped); onToast?.(`Loaded ${result.name||value} from Shopify`); }
     catch(err){setOrder(null);setRows([]);setError(err?.message||'Could not load Shopify order');onToast?.(err?.message||'Could not load Shopify order','error');}
     finally{setLoading(false);firstLookup.current=false;}
+  }
+
+  function clearCustomShipment() {
+    setOrder(null);setRows([]);setPlan(null);setCarrierData({});setFitDraft({});setNotes({});setFinalWeights({});setError('');
+  }
+  async function loadCustomShipment(result) {
+    clearCustomShipment();
+    setOrder(result);
+    const grouped=groupPhysicalPackages(result.physical_packages);
+    setRows(grouped);
+    await refreshCarrierData(grouped);
+    onToast?.('Custom shipment loaded');
   }
 
   function planPayload(nextRows=rows) { return { order_reference:order?.name||orderNumber, items:nextRows.map(r=>({ sku:r.sku, product_name:r.product_name, part:r.part, registry_id:r.registry_id, dimensions_in:r.dimensions_in, verification_status:r.verification_status, weight_kg:r.weight_kg, shipping_behavior:r.shipping_behavior, quantity:r.quantity, packed_inside_count:r.packed_inside_count, packed_into:r.packed_into })) }; }
@@ -206,8 +219,9 @@ function PackingView({ onToast, currentUser }) {
 
   const loose=plan?.loose_result; const packages=plan?.shipping_summary?.packages||[];
   return <div>
-    <div style={{...card,padding:20,marginBottom:18}}><form onSubmit={loadOrder} style={{display:'flex',gap:10,alignItems:'end',flexWrap:'wrap'}}><div style={{flex:'1 1 320px'}}><label style={{display:'block',fontSize:12,fontWeight:800,marginBottom:6,color:'var(--text-light)'}}>Shopify order number</label><input value={orderNumber} onChange={e=>setOrderNumber(e.target.value)} placeholder="#51234 or 51234" style={inputStyle}/></div><button type="submit" disabled={loading||!orderNumber.trim()} style={{...primaryButton,minWidth:150,opacity: loading ? 0.7 : 1}}>{loading?(firstLookup.current?'Connecting to Shopify…':'Loading…'):'Load order'}</button></form>{error&&<div style={{marginTop:12,color:'#b91c1c',fontSize:13,fontWeight:700}}>{error}</div>}</div>
-    {!order&&<div style={{...card,padding:50,textAlign:'center',color:'var(--text-light)'}}><div style={{fontSize:44}}>📦</div><div style={{fontWeight:800,color:'var(--text)',marginTop:8}}>Pack a Shopify order</div><div style={{fontSize:13,marginTop:6}}>Load the order once, then all packing-plan rebuilds happen locally against the loaded package state.</div></div>}
+    {custom ? <CustomShipmentBuilder onShipment={loadCustomShipment} onChange={clearCustomShipment} busy={planLoading}/> : <div style={{...card,padding:20,marginBottom:18}}><form onSubmit={loadOrder} style={{display:'flex',gap:10,alignItems:'end',flexWrap:'wrap'}}><div style={{flex:'1 1 320px'}}><label style={{display:'block',fontSize:12,fontWeight:800,marginBottom:6,color:'var(--text-light)'}}>Shopify order number</label><input value={orderNumber} onChange={e=>setOrderNumber(e.target.value)} placeholder="#51234 or 51234" style={inputStyle}/></div><button type="submit" disabled={loading||!orderNumber.trim()} style={{...primaryButton,minWidth:150,opacity: loading ? 0.7 : 1}}>{loading?(firstLookup.current?'Connecting to Shopify…':'Loading…'):'Load order'}</button></form>{error&&<div style={{marginTop:12,color:'#b91c1c',fontSize:13,fontWeight:700}}>{error}</div>}</div>}
+    {custom&&error&&<p role="alert" style={{color:'#b91c1c'}}>{error}</p>}
+    {!order&&<div style={{...card,padding:50,textAlign:'center',color:'var(--text-light)'}}><div style={{fontSize:44}}>📦</div><div style={{fontWeight:800,color:'var(--text)',marginTop:8}}>{custom?'Plan a custom shipment':'Pack a Shopify order'}</div><div style={{fontSize:13,marginTop:6}}>{custom?'Add SKUs and quantities above, then load the shipment to calculate its packing plan.':'Load the order once, then all packing-plan rebuilds happen locally against the loaded package state.'}</div></div>}
     {order&&<>
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(250px,1fr))',gap:14,marginBottom:18}}>
         <div style={{...card,padding:18}}><div style={{fontSize:11,textTransform:'uppercase',fontWeight:800,color:'var(--text-light)'}}>Order</div><div style={{fontSize:24,fontWeight:900,marginTop:4}}>{order.name}</div><div style={{fontSize:13,marginTop:7}}>{order.shipping_method||'No shipping method recorded'}</div></div>
@@ -226,7 +240,7 @@ function PackingView({ onToast, currentUser }) {
           {eligible.length>0&&<div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,padding:12}}><input value={notes[host.key]||''} onChange={e=>setNotes(prev=>({...prev,[host.key]:e.target.value}))} placeholder="Optional note: foam gap, orientation…" style={inputStyle}/><button onClick={()=>saveObservation(host)} style={secondaryButton}>Save Packing Result</button></div>}
         </div>})}</div>
       </div>}
-      <div style={{...card,padding:18,marginBottom:18}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}><div><div style={{fontWeight:900,fontSize:16}}>Build packing plan</div><div style={{fontSize:12,color:'var(--text-light)',marginTop:4}}>V5.7 carrier assignments + stock-aware exact 3D carton optimization.</div></div><button onClick={()=>buildPlan()} disabled={planLoading||!rows.length} style={{...primaryButton,opacity: planLoading ? 0.7 : 1}}>{planLoading?'Planning…':'Build Packing Plan'}</button></div></div>
+      <div style={{...card,padding:18,marginBottom:18}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}><div><div style={{fontWeight:900,fontSize:16}}>Build packing plan</div><div style={{fontSize:12,color:'var(--text-light)',marginTop:4}}>V5.7 carrier assignments + stock-aware exact 3D carton optimization.</div></div><button onClick={()=>buildPlan()} disabled={planLoading||!rows.length||!!readiness.unresolved_count} style={{...primaryButton,opacity: planLoading ? 0.7 : 1}}>{planLoading?'Planning…':'Build Packing Plan'}</button></div></div>
       {plan&&<>
         {plan.status!=='ok'&&<div style={{...card,padding:14,marginBottom:18,border:'1px solid #fecaca',background:'#fff7f7',color:'#991b1b',fontSize:12}}><strong>Partial packing plan.</strong> {plan.message||'Remaining loose items need review before shipping.'}</div>}
         <div style={{...card,padding:20,marginBottom:18}}><div style={{display:'flex',justifyContent:'space-between',gap:16,alignItems:'start',flexWrap:'wrap'}}><div><div style={{fontSize:11,fontWeight:900,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--text-light)'}}>{loose?.recommendation_tier==='next_best_available'?'Next best available warehouse carton':'Warehouse carton for remaining loose items'}</div><div style={{fontSize:36,fontWeight:900,letterSpacing:'-.03em',marginTop:5}}>{loose?.carton?dimsText(loose.carton):'No warehouse carton needed'}</div></div><div style={{display:'flex',gap:7,flexWrap:'wrap'}}>{loose?.status==='ok'&&<span style={{padding:'6px 9px',borderRadius:999,background:'#dcfce7',color:'#166534',fontSize:11,fontWeight:900}}>Valid 3D fit</span>}{loose?.confidence&&<span style={{padding:'6px 9px',borderRadius:999,background:loose.confidence==='provisional'?'#fef3c7':'#dcfce7',color:loose.confidence==='provisional'?'#92400e':'#166534',fontSize:11,fontWeight:900}}>{loose.confidence==='provisional'?'Provisional recommendation':'All dimensions verified'}</span>}</div></div>
@@ -286,7 +300,7 @@ export default function ShippingPage({ onToast, entrySignal }) {
   },[entrySignal]);
   function signIn(profile) { api.setShippingUser(profile); setUser(profile); }
   function selectView(id) { setVisited(previous=>new Set([...previous,id])); setView(id); }
-  const tabs=[['packing','Pack an Order'],['registry','Package Database'],['catalog','Carton Catalog'],['history','Packing History']];
+  const tabs=[['packing','Pack an Order'],['custom','Custom Shipment'],['registry','Package Database'],['catalog','Carton Catalog'],['history','Packing History']];
   // Keep visited views mounted so tab changes preserve the order, plan and drafts.
   // Hiding the workspace during identity selection also prevents unattributed saves.
   return <div style={{padding:'28px 34px 60px',maxWidth:1500,margin:'0 auto'}}>
@@ -298,6 +312,7 @@ export default function ShippingPage({ onToast, entrySignal }) {
       </div>
       <div style={{display:'flex',gap:7,flexWrap:'wrap',marginBottom:18}}>{tabs.map(([id,label])=><button key={id} onClick={()=>selectView(id)} style={{border:'1px solid',borderColor:view===id?GREEN:'var(--border)',borderRadius:999,padding:'8px 13px',background:view===id?'#eefbf3':'#fff',color:view===id?'#16723b':'var(--text)',fontWeight:800,cursor:'pointer'}}>{label}</button>)}</div>
       <div hidden={view!=='packing'}><PackingView onToast={onToast} currentUser={user?.name}/></div>
+      {visited.has('custom')&&<div hidden={view!=='custom'}><PackingView custom onToast={onToast} currentUser={user?.name}/></div>}
       {visited.has('registry')&&<div hidden={view!=='registry'}><PackageDatabaseView onToast={onToast} currentUser={user?.name}/></div>}
       {visited.has('catalog')&&<div hidden={view!=='catalog'}><CartonCatalogView onToast={onToast} active={view==='catalog'&&!!user}/></div>}
       {view==='history'&&<HistoryView onToast={onToast}/>}

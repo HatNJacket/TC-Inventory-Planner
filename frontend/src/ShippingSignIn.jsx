@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import * as api from './api';
 
 export default function ShippingSignIn({ onSignIn }) {
-  const [users, setUsers] = useState([]);
+  const [users, setUsers] = useState(api.getCachedShippingUsers);
   const [name, setName] = useState('');
   const [initials, setInitials] = useState('');
   const [error, setError] = useState('');
@@ -28,10 +28,11 @@ export default function ShippingSignIn({ onSignIn }) {
     <h2 id="shipping-sign-in-title">Who is using Shipping Tools?</h2>
     <p>Select your profile each time you enter Shipping. Your name is attached to packing observations, carton counts, and new measurements.</p>
     {error && <p role="alert" style={{ color: '#b91c1c' }}>{error} <button onClick={load}>Retry</button></p>}
-    {loading ? <p>Loading warehouse users…</p> : <div style={{ display: 'grid', gap: 8, margin: '20px 0' }}>
+    {loading && <p role="status">{users.length ? 'Refreshing saved profiles…' : 'Loading warehouse users…'}</p>}
+    <div style={{ display: 'grid', gap: 8, margin: '20px 0' }}>
       {users.map(user => <button key={user.id} disabled={saving} style={button} onClick={() => onSignIn(user)}><strong style={{ color: 'var(--green)', marginRight: 12 }}>{user.initials}</strong><strong>{user.name}</strong><span style={{ display: 'block', marginTop: 4, fontSize: 12 }}>Sign in as this user</span></button>)}
-      {!users.length && <p>No warehouse users yet. Add the first profile below.</p>}
-    </div>}
+      {!loading && !error && !users.length && <p>No warehouse users yet. Add the first profile below.</p>}
+    </div>
     <form onSubmit={create} style={{ display: 'grid', gap: 12, borderTop: '1px solid var(--border)', paddingTop: 20 }}>
       <strong>Add warehouse user</strong>
       <label>Name<input autoFocus required maxLength={120} value={name} onChange={e => setName(e.target.value)} style={input} /></label>

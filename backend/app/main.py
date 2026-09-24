@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from .config import config
 from . import shipping_users
+from .shipping_custom import custom_shipment
 from .database import db
 from .forecasting import forecast_engine
 from .shopify_client import shopify_client
@@ -184,7 +185,7 @@ async def whoami(user: str = Depends(current_user)):
 
 
 @app.get("/api/config/vendors")
-async def get_vendors(token: str = Depends(verify_token)):
+def get_vendors(token: str = Depends(verify_token)):
     """Get list of vendors with their lead times."""
     try:
         cached_vendors = db.get_distinct_vendors()
@@ -421,7 +422,7 @@ def _enrich_with_sales(items: List[dict]) -> None:
 
 
 @app.get("/api/replenishment")
-async def get_replenishment(
+def get_replenishment(
     vendor: Optional[str] = Query(None, description="Filter by vendor"),
     search: Optional[str] = Query(None, description="Search product name or SKU"),
     sort: str = Query("replenish_qty", description="Sort field"),
@@ -6436,6 +6437,14 @@ async def shipping_order_for_packing(
 @app.get("/api/shipping/users")
 def shipping_user_profiles(token: str = Depends(verify_token)):
     return {"users": shipping_users.load_users()}
+
+
+@app.post("/api/shipping/custom-shipment")
+def shipping_custom_shipment(payload: dict, token: str = Depends(verify_token)):
+    try:
+        return custom_shipment(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/shipping/users")
