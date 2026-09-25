@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as api from './api';
 import ShippingSignIn from './ShippingSignIn';
 import CustomShipmentBuilder from './CustomShipmentBuilder';
+import CartonCatalogView from './CartonCatalog';
 import { dimensionToInches, dimensionForInput, packageDimensionsText } from './shippingUnits';
 
 const GREEN = '#2aad51';
@@ -260,18 +261,6 @@ function PackingView({ onToast, currentUser, custom = false }) {
   </div>;
 }
 
-function CartonCatalogView({ onToast, active }) {
-  const [data,setData]=useState(api.getCachedShippingCartons);
-  const [draft,setDraft]=useState(()=>Object.fromEntries((api.getCachedShippingCartons()?.inventory||[]).map(x=>[x.key,x.quantity??''])));
-  const [loading,setLoading]=useState(true);const [saving,setSaving]=useState(false);const [error,setError]=useState('');
-  const dirty = Object.keys(draft).some(key => String(draft[key]) !== String(data?.inventory?.find(row=>row.key===key)?.quantity??''));
-  async function load(){setLoading(true);setError('');try{const r=await api.getShippingCartons();setData(r);setDraft(Object.fromEntries((r.inventory||[]).map(x=>[x.key,x.quantity??''])));}catch(e){setError(e.message);onToast?.(e.message,'error');}finally{setLoading(false);}}
-  useEffect(()=>{if(active&&!dirty)load();},[active]);
-  function change(key,delta){setDraft(prev=>{const current=prev[key]===''?0:Number(prev[key]||0);return {...prev,[key]:String(Math.max(0,current+delta))};});}
-  async function save(){setSaving(true);try{const r=await api.saveShippingCartonStock((data.inventory||[]).filter(x=>String(draft[x.key])!==String(x.quantity??'')).map(x=>({dimensions:x.dimensions,quantity:draft[x.key]===''?null:Number(draft[x.key])})));setData(r);setDraft(Object.fromEntries((r.inventory||[]).map(x=>[x.key,x.quantity??''])));onToast?.('Carton stock saved');}catch(e){onToast?.(e.message,'error');}finally{setSaving(false);}}
-  if(loading&&!data)return <div style={{...card,padding:30}}>Loading carton catalog…</div>;
-  return <div>{loading&&<p role="status">Showing saved catalog · checking latest stock…</p>}{error&&<p role="alert" style={{color:'#b91c1c'}}>Could not refresh stock: {error} <button onClick={load} disabled={dirty}>Retry</button></p>}<div style={{display:'flex',justifyContent:'space-between',alignItems:'start',gap:14,marginBottom:14}}><div><h2 style={{margin:0,fontSize:20}}>Warehouse carton catalog</h2><div style={{fontSize:12,color:'var(--text-light)',marginTop:4}}>{data?.count||0} sizes · {data?.tracked_count||0} counted · {data?.out_of_stock_count||0} out of stock · {data?.uncounted_count||0} not counted</div></div><button onClick={save} disabled={saving||loading||!!error||!data||!dirty} style={{...primaryButton,opacity: saving ? 0.7 : 1}}>{saving?'Saving…':'Save Carton Stock'}</button></div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(190px,1fr))',gap:10}}>{(data?.inventory||[]).map(r=><div key={r.key} style={{...card,padding:12,opacity: r.quantity === 0 ? 0.65 : 1}}><div style={{fontWeight:900}}>{dimsText(r.dimensions)}</div><div style={{display:'grid',gridTemplateColumns:'40px 1fr 40px',gap:6,marginTop:9}}><button disabled={loading||saving} onClick={()=>change(r.key,-1)} style={secondaryButton}>−</button><input disabled={loading||saving} value={draft[r.key]??''} onChange={e=>setDraft(prev=>({...prev,[r.key]:e.target.value}))} placeholder="blank" type="number" min="0" step="1" style={{...inputStyle,textAlign:'center'}}/><button disabled={loading||saving} onClick={()=>change(r.key,1)} style={secondaryButton}>+</button></div><div style={{fontSize:10,color:r.quantity===0?'#b91c1c':'var(--text-light)',marginTop:7}}>{r.quantity===0?'Out of stock':r.quantity==null?'Not counted':'Counted'}</div></div>)}</div></div>;
-}
 
 function HistoryView({ onToast }) {
   const [data,setData]=useState(null);async function load(){try{setData(await api.getShippingPackingHistory(200));}catch(e){onToast?.(e.message,'error');}}useEffect(()=>{load();},[]);

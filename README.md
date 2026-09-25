@@ -86,6 +86,31 @@ The stored registry and packing engine still use inches, so existing records
 are not reinterpreted or bulk-converted. Carton sizes and packing diagrams retain
 their labelled inch units.
 
+### Box stock and replenishment
+
+In **Shipping → Carton Catalog**, set **On hand**, a **Minimum**, and a higher
+**Restock target**, then save. At or below the minimum the **Box shopping list**
+shows the quantity needed to reach the target. Leave both thresholds blank to
+disable monitoring for a size. Unknown stock is flagged for counting, not treated
+as zero. Download the shopping list as CSV.
+
+Use **Import box stock** to upload a PDF or CSV. Choose **Receive delivery** to
+add boxes to a known count, or **Physical count** to replace the counts for the
+imported sizes. Choose the dimension units printed on a PDF. Review the preview
+before applying; extracted rows can be corrected as CSV and previewed again.
+PDF support requires selectable text and a table with box dimensions/description
+and quantity/shipped columns. Scanned PDFs, fractional dimension text and
+unrecognized layouts require the CSV template. Quantities must be individual
+boxes, not supplier bundles or cases. Sizes must match the existing catalog.
+
+CSV headers: `length,width,height,unit,quantity,minimum,target` (the last two are
+optional). Units can be `cm` or `in`; dimension order does not affect matching.
+Blank minimum/target cells retain existing thresholds. Duplicates, unknown sizes,
+invalid quantities, and stale previews block the import. Retrying the same apply
+request does not add a delivery twice. Stock, thresholds, and recent adjustments
+are stored in the existing local carton inventory file; persistent shared database
+storage remains a later milestone. Packing calculations do not deduct stock.
+
 Double-click `run-local.bat`. That's it. On the first run it:
 
 1. Installs Python (if missing), ODBC Driver 18 for SQL Server and

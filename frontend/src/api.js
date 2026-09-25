@@ -51,7 +51,7 @@ export function isAuthenticated() {
 async function apiFetch(path, options = {}) {
   const token = getToken();
   const headers = {
-    'Content-Type': 'application/json',
+    ...(!(options.body instanceof FormData) && { 'Content-Type': 'application/json' }),
     ...(token && { Authorization: `Bearer ${token}` }),
     ...(path.startsWith('/shipping/') && shippingUserId && { 'X-Shipping-User': shippingUserId }),
     ...options.headers,
@@ -1360,12 +1360,24 @@ export function getShippingCartons() {
   return cartonRequest;
 }
 
-export async function saveShippingCartonStock(changes) {
+export async function saveShippingCartonStock(changes, revision) {
   const result = await apiFetch('/shipping/cartons/stock', {
     method: 'POST',
-    body: JSON.stringify({ changes }),
+    body: JSON.stringify({ changes, revision }),
   });
   return cacheCartons(result);
+}
+
+export function previewShippingStockFile(file, mode, unit) {
+  const body = new FormData();
+  body.append('file', file); body.append('mode', mode); body.append('unit', unit);
+  return apiFetch('/shipping/cartons/import/file', { method: 'POST', body });
+}
+export function previewShippingStockImport(csv, mode) {
+  return apiFetch('/shipping/cartons/import/preview', { method: 'POST', body: JSON.stringify({ csv, mode }) });
+}
+export async function applyShippingStockImport(payload) {
+  return cacheCartons(await apiFetch('/shipping/cartons/import/apply', { method: 'POST', body: JSON.stringify(payload) }));
 }
 
 

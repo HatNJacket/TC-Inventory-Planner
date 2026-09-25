@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Security
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Security, Form
 from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -25,6 +25,9 @@ from pydantic import BaseModel
 from .config import config
 from . import shipping_users
 from .shipping_custom import custom_shipment
+from .shipping_stock_import import preview_import, apply_import
+from .shipping_pdf_import import pdf_to_csv
+from .shipping_optimizer import InventoryConflict
 from .database import db
 from .forecasting import forecast_engine
 from .shopify_client import shopify_client
@@ -6467,7 +6470,46 @@ async def shipping_cartons_stock(
 ):
     """Save carton counts in one operation. Blank/null = not counted; zero = out of stock."""
     try:
-        return set_shipping_carton_stock_bulk(payload.get("changes") or [], user_name=user)
+        options = {"expected_revision": payload["revision"]} if "revision" in payload else {}
+        return set_shipping_carton_stock_bulk(payload.get("changes") or [], user_name=user, **options)
+    except InventoryConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/shipping/cartons/import/preview")
+def shipping_carton_import_preview(payload: dict, token: str = Depends(verify_token)):
+    try:
+        return preview_import(payload.get("csv"), payload.get("mode"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/shipping/cartons/import/file")
+async def shipping_carton_import_file(file: UploadFile = File(...), mode: str = Form(...),
+                                      unit: str = Form(""), token: str = Depends(verify_token)):
+    content = await file.read(5_000_001)
+    if len(content) > 5_000_000:
+        raise HTTPException(status_code=400, detail="Import files smaller than 5 MB.")
+    try:
+        if (file.filename or "").lower().endswith(".pdf"):
+            text = await run_in_threadpool(pdf_to_csv, content, unit)
+        elif (file.filename or "").lower().endswith(".csv"):
+            text = content.decode("utf-8-sig")
+        else:
+            raise ValueError("Choose a PDF or CSV file.")
+        preview = await run_in_threadpool(preview_import, text, mode)
+        return {**preview, "csv": text}
+    except (ValueError, UnicodeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/shipping/cartons/import/apply")
+def shipping_carton_import_apply(payload: dict, user: str = Depends(current_shipping_user)):
+    try:
+        return apply_import(payload, user)
+    except InventoryConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

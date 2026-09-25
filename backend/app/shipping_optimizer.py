@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import math
+import hashlib
+from threading import RLock
 from dataclasses import asdict, dataclass
 from itertools import permutations
 from pathlib import Path
@@ -26,6 +28,15 @@ APP_DATA_DIR = Path(__file__).resolve().parent / "data"
 CARTON_CATALOG_PATH = APP_DATA_DIR / "shipping_carton_catalog.json"
 CARTON_INVENTORY_PATH = APP_DATA_DIR / "shipping_carton_inventory.json"
 FACTORY_BEHAVIORS = {"carrier_ready", "accessory_carrier", "must_ship_alone"}
+INVENTORY_LOCK = RLock()
+
+
+class InventoryConflict(ValueError):
+    pass
+
+
+def inventory_revision(payload):
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -67,6 +78,8 @@ def _safe_float(value: Any) -> float | None:
 def _safe_stock(value: Any) -> int | None:
     if value is None or str(value).strip() == "":
         return None
+    if isinstance(value, bool):
+        raise ValueError("Carton stock must be a whole number, not true/false.")
     try:
         number = float(value)
     except (TypeError, ValueError) as exc:
@@ -122,6 +135,7 @@ def _ensure_inventory() -> dict[str, Any]:
     payload.setdefault("version", 1)
     payload.setdefault("stock", {})
     payload.setdefault("adjustments", [])
+    payload.setdefault("reorder", {})
     return payload
 
 
@@ -140,57 +154,99 @@ def get_carton_catalog() -> dict[str, Any]:
     rows = []
     for carton in cartons:
         quantity = _safe_stock(stock.get(_carton_key(carton)))
+        policy = payload.get("reorder", {}).get(_carton_key(carton), {})
+        minimum = policy.get("minimum")
+        target = policy.get("target")
+        low_stock = minimum is not None and quantity is not None and quantity <= minimum
         rows.append({
             "dimensions": list(carton),
             "key": _carton_key(carton),
             "quantity": quantity,
             "tracked": quantity is not None,
             "in_stock": quantity is None or quantity > 0,
+            "minimum": minimum,
+            "target": target,
+            "low_stock": low_stock,
+            "order_quantity": max(0, (target or 0) - quantity) if low_stock else 0,
         })
     return {
+        "revision": inventory_revision(payload),
         "unit": "inches",
         "count": len(rows),
         "tracked_count": sum(1 for row in rows if row["tracked"]),
         "uncounted_count": sum(1 for row in rows if not row["tracked"]),
         "out_of_stock_count": sum(1 for row in rows if row["quantity"] == 0),
         "inventory": rows,
+        "shopping_list": sorted([row for row in rows if row["low_stock"]], key=lambda row: (row["quantity"] != 0, row["key"])),
+        "low_stock_count": sum(1 for row in rows if row["low_stock"]),
+        "needs_count_count": sum(1 for row in rows if row["minimum"] is not None and row["quantity"] is None),
     }
 
 
-def set_carton_stock_bulk(changes: list[dict[str, Any]], user_name: str = "") -> dict[str, Any]:
-    if not changes:
-        raise ValueError("Provide at least one carton stock change")
-    catalog = load_catalog()
-    catalog_by_key = {_carton_key(c): c for c in catalog}
-    payload = _ensure_inventory()
-    stock = payload.setdefault("stock", {})
-    adjustments = payload.setdefault("adjustments", [])
-    from datetime import datetime
-    recorded_at = datetime.now().isoformat(timespec="seconds")
-
-    for raw in changes:
-        dims = raw.get("dimensions")
-        if not isinstance(dims, list) or len(dims) != 3:
-            raise ValueError("Each carton stock change needs dimensions [L, W, H]")
-        key = _carton_key(dims)
-        if key not in catalog_by_key:
-            raise ValueError(f"Carton {key} is not in the catalog")
-        quantity = _safe_stock(raw.get("quantity"))
-        old = _safe_stock(stock.get(key))
-        if old == quantity:
-            continue
-        stock[key] = quantity
-        adjustments.append({
-            "recorded_at": recorded_at,
-            "carton_key": key,
-            "dimensions": list(catalog_by_key[key]),
-            "old_quantity": old,
-            "new_quantity": quantity,
-            "change_type": "manual_count_bulk",
-            "user_name": user_name or "Unknown",
-        })
-    _write_inventory(payload)
-    return get_carton_catalog()
+def set_carton_stock_bulk(changes: list[dict[str, Any]], user_name: str = "", *,
+                          expected_revision=None, mode="count", request_id=None) -> dict[str, Any]:
+    """Validate the entire batch before writing; receipts add to known counts."""
+    if mode not in {"count", "receive"}:
+        raise ValueError("Choose count or receive mode.")
+    if not isinstance(changes, list) or not changes or len(changes) > 500:
+        raise ValueError("Provide between 1 and 500 carton changes.")
+    with INVENTORY_LOCK:
+        payload = _ensure_inventory()
+        if request_id and request_id in payload.get("applied_imports", []):
+            return get_carton_catalog()
+        if expected_revision is not None and expected_revision != inventory_revision(payload):
+            raise InventoryConflict("Carton stock changed since loading. Refresh or preview the import again.")
+        catalog_by_key = {_carton_key(c): c for c in load_catalog()}
+        stock = payload.setdefault("stock", {})
+        policies = payload.setdefault("reorder", {})
+        adjustments = payload.setdefault("adjustments", [])
+        from datetime import datetime
+        recorded_at = datetime.now().isoformat(timespec="seconds")
+        seen = set()
+        for raw in changes:
+            if not isinstance(raw, dict):
+                raise ValueError("Each carton change must be an object.")
+            dims = raw.get("dimensions")
+            if not isinstance(dims, list) or len(dims) != 3:
+                raise ValueError("Each carton stock change needs dimensions [L, W, H].")
+            if any(_safe_float(value) is None or _safe_float(value) <= 0 for value in dims):
+                raise ValueError("Carton dimensions must be positive finite numbers.")
+            key = _carton_key(dims)
+            if key not in catalog_by_key:
+                raise ValueError(f"Carton {key} is not in the catalog.")
+            if key in seen:
+                raise ValueError(f"Carton {key} appears more than once.")
+            seen.add(key)
+            old = _safe_stock(stock.get(key))
+            quantity = _safe_stock(raw.get("quantity", old))
+            if mode == "receive":
+                if old is None:
+                    raise ValueError(f"Count carton {key} before adding a delivery; current stock is unknown.")
+                if quantity is None:
+                    raise ValueError("Delivery quantity cannot be blank.")
+                quantity += old
+            previous_policy = policies.get(key, {})
+            minimum = _safe_stock(raw.get("minimum", previous_policy.get("minimum")))
+            target = _safe_stock(raw.get("target", previous_policy.get("target")))
+            if (minimum is None) != (target is None) or (minimum is not None and target <= minimum):
+                raise ValueError(f"Carton {key}: set both minimum and target, with target greater than minimum, or leave both blank.")
+            policy = {"minimum": minimum, "target": target}
+            if quantity == old and policy == {"minimum": previous_policy.get("minimum"), "target": previous_policy.get("target")}:
+                continue
+            stock[key] = quantity
+            policies[key] = policy
+            adjustments.append({
+                "recorded_at": recorded_at, "carton_key": key,
+                "dimensions": list(catalog_by_key[key]),
+                "old_quantity": old, "new_quantity": quantity,
+                "old_reorder": previous_policy, "new_reorder": policy,
+                "change_type": "delivery_import" if mode == "receive" else ("count_import" if request_id else "manual_count_bulk"),
+                "user_name": user_name or "Unknown",
+            })
+        if request_id:
+            payload["applied_imports"] = (payload.get("applied_imports", []) + [request_id])[-100:]
+        _write_inventory(payload)
+        return get_carton_catalog()
 
 
 def solve_packing(
