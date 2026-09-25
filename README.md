@@ -79,6 +79,13 @@ tabs preserves both the custom shipment and the separate Shopify order.
 Warehouse profiles are cached on this browser and refreshed in the background;
 staff still choose their profile each time they enter Shipping.
 
+The Package Database defaults to **centimetres** for viewing and entering
+dimensions. Use **Dimension units** to switch between cm and inches; existing
+values convert automatically and the equivalent measurements appear underneath.
+The stored registry and packing engine still use inches, so existing records
+are not reinterpreted or bulk-converted. Carton sizes and packing diagrams retain
+their labelled inch units.
+
 Double-click `run-local.bat`. That's it. On the first run it:
 
 1. Installs Python (if missing), ODBC Driver 18 for SQL Server and
