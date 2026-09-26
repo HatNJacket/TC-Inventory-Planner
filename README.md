@@ -179,6 +179,12 @@ paper-use measurements or dollar savings. Nothing is purchased or added to the
 catalog automatically. Data remains in the local inventory file; shared database
 storage and corrections to historical confirmations remain future work.
 
+Use **Download box recommendations (CSV)** in Suggested Box Sizes to export the
+ranked list, dimensions in inches and cm, benefiting shipment counts, empty-volume
+reduction, and the analysis date range. The export includes the same limitations
+as the screen and is available only when qualifying suggestions exist. It does
+not modify stock, shipment history, or the catalog.
+
 Double-click `run-local.bat`. That's it. On the first run it:
 
 1. Installs Python (if missing), ODBC Driver 18 for SQL Server and

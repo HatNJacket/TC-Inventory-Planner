@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from './api';
 import { packageDimensionsText as dims } from './shippingUnits';
+import { boxRecommendationsCsv } from './boxRecommendationsCsv.mjs';
 
 const card={background:'#fff',border:'1px solid var(--border)',borderRadius:12,padding:18,marginBottom:18};
 const button={padding:'10px 16px',borderRadius:8,border:'1px solid var(--border)',background:'#fff',fontWeight:700,cursor:'pointer'};
@@ -19,6 +20,15 @@ export default function ShipmentIntelligence(){
     catch(e){setError(e.message);}finally{setBusy(false);}
   }
   useEffect(()=>{load(0);},[]);
+  function downloadRecommendations(){
+    if(busy||error)return;
+    const csv=boxRecommendationsCsv(analysis);
+    if(!csv)return;
+    const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    const link=document.createElement('a');link.href=url;link.download='box-recommendations.csv';
+    document.body.appendChild(link);link.click();link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
   return <section style={card} aria-label="Shipment intelligence">
     <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}><h2 style={{marginTop:0}}>Packing history & box opportunities</h2><button style={button} disabled={busy} onClick={()=>load()}>{busy?'Loading…':'Refresh shipment history'}</button></div>
     <div style={{display:'flex',gap:10,marginBottom:16}}>{[['shipments','Confirmed shipments'],['suggestions','Suggested Box Sizes']].map(([key,label])=><button key={key} style={{...button,background:view===key?'#dcfce7':'#fff'}} aria-pressed={view===key} onClick={()=>setView(key)}>{label}</button>)}</div>
@@ -37,6 +47,8 @@ export default function ShipmentIntelligence(){
       <div style={{display:'flex',gap:12,alignItems:'center',marginTop:12}}><button style={button} disabled={busy||offset===0} onClick={()=>load(Math.max(0,offset-50))}>Previous shipments</button><span>{history.count?`${offset+1}–${Math.min(offset+50,history.count)} of ${history.count}`:'0 shipments'}</span><button style={button} disabled={busy||offset+50>=history.count} onClick={()=>load(offset+50)}>Next shipments</button></div>
     </>}
     {view==='suggestions'&&analysis&&<>
+      <button style={button} disabled={busy||!!error||!analysis.suggestions.length||analysis.eligible_count<analysis.minimum_shipments} onClick={downloadRecommendations}>Download box recommendations (CSV)</button>
+      {!analysis.suggestions.length&&<p style={{fontSize:12}}>Download becomes available when qualifying recommendations appear.</p>}
       <p>Practical evidence thresholds, not a claim of statistical significance. Analysis uses up to the latest {analysis.window_limit} eligible shipments. {analysis.excluded_count} records are ineligible; {analysis.stockout_count} stockout substitutions are excluded from benefits.</p>
       {analysis.period_start&&<p>Sample period: {analysis.period_start.replace('T',' ')} to {analysis.period_end.replace('T',' ')}.</p>}
       <p>Proposed internal dimensions preserve a proven item arrangement, add {analysis.clearance_in} in total clearance on each axis, and round up to whole inches. Space reduction is a potential filler-saving indicator—not measured paper usage or a shipping-price estimate. Check supplier availability, protection needs, and physical fit before purchasing.</p>
