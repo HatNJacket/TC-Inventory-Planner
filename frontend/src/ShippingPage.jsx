@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as api from './api';
 import ShippingSignIn from './ShippingSignIn';
+import DancingRobot from './DancingRobot';
 import CustomShipmentBuilder from './CustomShipmentBuilder';
 import CartonCatalogView from './CartonCatalog';
 import ConfirmBoxUsage from './ConfirmBoxUsage';
@@ -321,5 +322,6 @@ export default function ShippingPage({ onToast, entrySignal }) {
       {visited.has('catalog')&&<div hidden={view!=='catalog'}><CartonCatalogView onToast={onToast} active={view==='catalog'&&!!user}/></div>}
       {view==='history'&&<HistoryView onToast={onToast}/>}
     </div>
+    <DancingRobot />
   </div>;
 }
