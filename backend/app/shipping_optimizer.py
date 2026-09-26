@@ -186,7 +186,7 @@ def get_carton_catalog() -> dict[str, Any]:
 
 def set_carton_stock_bulk(changes: list[dict[str, Any]], user_name: str = "", *,
                           expected_revision=None, mode="count", request_id=None,
-                          shipment_reference=None) -> dict[str, Any]:
+                          shipment_reference=None, shipment_data=None) -> dict[str, Any]:
     """Validate the entire batch before writing; receipts add to known counts."""
     if mode not in {"count", "receive", "stocktake", "consume"}:
         raise ValueError("Choose a valid stock action.")
@@ -276,6 +276,7 @@ def set_carton_stock_bulk(changes: list[dict[str, Any]], user_name: str = "", *,
             payload.setdefault("shipments", {})[shipment_key] = {
                 "reference": shipment_reference, "changes": changes,
                 "recorded_at": recorded_at, "user_name": user_name or "Unknown",
+                "packing": shipment_data,
             }
         _write_inventory(payload)
         return get_carton_catalog()

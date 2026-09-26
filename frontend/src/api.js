@@ -1418,6 +1418,13 @@ export async function getShippingPackingHistory(limit = 200) {
   return apiFetch('/shipping/packing-history?limit=' + encodeURIComponent(String(limit)));
 }
 
+export function getShippingShipmentHistory(offset = 0) {
+  return apiFetch('/shipping/shipment-history?limit=50&offset=' + encodeURIComponent(offset));
+}
+export function getShippingBoxSuggestions() {
+  return apiFetch('/shipping/box-suggestions');
+}
+
 export async function getShippingPackingHistorySummary(hostRegistryId) {
   const params = new URLSearchParams({ host_registry_id: hostRegistryId });
   return apiFetch('/shipping/packing-history/summary?' + params.toString());

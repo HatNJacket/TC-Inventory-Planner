@@ -3,12 +3,13 @@ import * as api from './api';
 import { packageDimensionsText } from './shippingUnits';
 
 const keyFor=dims=>[...dims].map(Number).sort((a,b)=>a-b).map(v=>Number(v.toFixed(6))).join('x');
-export default function ConfirmBoxUsage({ packages, reference, custom, onToast }) {
+export default function ConfirmBoxUsage({ packages, reference, custom, packingResult, onToast }) {
   const [preview,setPreview]=useState(null);
   const [shipment,setShipment]=useState(custom?'':reference);
   const [busy,setBusy]=useState(false);
   const [done,setDone]=useState(false);
   const [error,setError]=useState('');
+  const [realShipment,setRealShipment]=useState(false);
   const grouped=new Map();
   packages.filter(p=>p.package_type==='warehouse_carton').forEach(p=>{
     const key=keyFor(p.dimensions_in);
@@ -23,7 +24,7 @@ export default function ConfirmBoxUsage({ packages, reference, custom, onToast }
   }
   async function confirm(){
     setBusy(true);setError('');
-    try{await api.confirmShippingBoxUsage({packages,shipment_reference:shipment,revision:preview.revision});setDone(true);onToast?.('Boxes used recorded');}
+    try{await api.confirmShippingBoxUsage({packages,shipment_reference:shipment,revision:preview.revision,source:custom?'custom':'order',real_shipment:!custom&&realShipment,packing_result:packingResult});setDone(true);onToast?.('Boxes used recorded in Packing History');}
     catch(e){setError(e.message);}finally{setBusy(false);}
   }
   return <section aria-label="Shipment box usage" style={{background:'#fff',border:'1px solid var(--border)',borderRadius:12,padding:18,marginBottom:18}}>
@@ -33,6 +34,8 @@ export default function ConfirmBoxUsage({ packages, reference, custom, onToast }
       {!preview?<button disabled={busy} onClick={review}>{busy?'Loading…':'Review boxes used'}</button>:<>
         <label>Unique shipment reference <input aria-label="Shipment reference" maxLength={150} disabled={busy||!custom} value={shipment} onChange={e=>setShipment(e.target.value)}/></label>
         {custom&&<p>For a real custom shipment, enter its unique reference. Do not confirm test plans.</p>}
+        {!custom&&<label style={{display:'block',margin:'12px 0'}}><input type="checkbox" checked={realShipment} disabled={busy} onChange={e=>setRealShipment(e.target.checked)}/> This is a real shipment packed in the box shown, not a test. Include its verified packing layout in box-size analysis.</label>}
+        <p style={{fontSize:12}}>Every confirmation is recorded in Packing History. Custom shipments and unchecked test orders are excluded from suggestions. Only confirmed warehouse cartons with verified item layouts count.</p>
         <table style={{width:'100%',textAlign:'left',margin:'12px 0'}}><thead><tr><th>Box size</th><th>On hand</th><th>Used</th><th>After confirmation</th></tr></thead><tbody>{rows.map(row=>{
           const current=preview.inventory.find(item=>item.key===row.key)?.quantity;
           return <tr key={row.key}><td>{packageDimensionsText(row.dimensions,'in')}</td><td>{current??'Not counted'}</td><td>{row.quantity}</td><td>{current==null?'Count stock first':current-row.quantity}</td></tr>;

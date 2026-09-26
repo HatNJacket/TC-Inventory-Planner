@@ -147,6 +147,38 @@ actual on-hand totals using stocktake if a recorded shipment was cancelled.
 Shipment deduplication records are retained in the local inventory file alongside
 stock; back up that file and run one backend process (not multiple workers).
 
+### Packing history and suggested box sizes
+
+**Packing History** now includes confirmed warehouse shipments and **Suggested
+Box Sizes**, alongside the existing accessory-fit observations. During box-usage
+confirmation, explicitly check **This is a real shipment** only after physically
+packing the order in the displayed box. This captures the verified item layout,
+box used, unused volume/percentage, date and packer in the same atomic inventory
+write as the stock deduction. Retrying the shipment cannot add another observation.
+Planning alone never adds shipment evidence. Custom shipments, unchecked test
+orders, legacy records, and missing/unverified/invalid layouts remain excluded.
+The initial analysis supports one warehouse carton per shipment; factory-only
+shipments do not contribute to this warehouse-box sample.
+
+Suggestions start at **100 eligible shipments**, with **10 distinct benefiting
+shipments per proposed size**. These are practical starting thresholds, not formal
+statistical significance. Analysis uses the latest 1,000 eligible shipments and
+shows the date range. A candidate preserves an observed non-overlapping item
+arrangement, adds 0.5 inch total clearance on each axis, then rounds up to whole
+inches. Fit comparisons allow rotation of that complete arrangement; they do not
+claim to find every possible rearrangement or the globally optimal new box.
+Out-of-stock substitutions are excluded from recommendation benefits, and a new
+size is not suggested when an existing catalog size proves equally efficient.
+
+The top ten candidates show supporting shipment references, benefit counts,
+average unused-space percentages and total empty-volume reduction in litres.
+Benefits overlap between candidates and must not be added together. Proposed
+dimensions are internal dimensions; verify supplier availability, actual fit and
+protection requirements. These are potential filler-reduction opportunities, not
+paper-use measurements or dollar savings. Nothing is purchased or added to the
+catalog automatically. Data remains in the local inventory file; shared database
+storage and corrections to historical confirmations remain future work.
+
 Double-click `run-local.bat`. That's it. On the first run it:
 
 1. Installs Python (if missing), ODBC Driver 18 for SQL Server and

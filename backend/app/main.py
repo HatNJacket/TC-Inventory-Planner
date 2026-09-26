@@ -29,6 +29,7 @@ from .shipping_stock_import import preview_import, apply_import
 from .shipping_pdf_import import extract_pdf_import
 from .shipping_optimizer import InventoryConflict
 from .shipping_stock_actions import apply_stocktake, confirm_usage
+from .shipping_intelligence import shipment_history, suggestions as shipping_box_suggestions
 from .database import db
 from .forecasting import forecast_engine
 from .shopify_client import shopify_client
@@ -6603,6 +6604,16 @@ async def shipping_package_database_delete(
         return shipping_delete_registry_record(record_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/shipping/shipment-history")
+def shipping_shipment_history(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=50), token: str = Depends(verify_token)):
+    return shipment_history(offset, limit)
+
+
+@app.get("/api/shipping/box-suggestions")
+def shipping_suggested_boxes(token: str = Depends(verify_token)):
+    return shipping_box_suggestions()
 
 
 @app.get("/api/shipping/packing-history")

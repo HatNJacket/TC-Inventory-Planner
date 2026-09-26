@@ -1,5 +1,6 @@
 """Explicit physical counts and shipment usage; planning never mutates stock."""
 from . import shipping_optimizer as stock
+from .shipping_intelligence import shipment_snapshot
 
 
 def apply_stocktake(payload, user):
@@ -33,4 +34,5 @@ def confirm_usage(payload, user):
     return stock.set_carton_stock_bulk(
         [counts[key] for key in sorted(counts)], user, mode="consume",
         expected_revision=payload["revision"], shipment_reference=payload.get("shipment_reference"),
+        shipment_data=shipment_snapshot(payload),
     )
