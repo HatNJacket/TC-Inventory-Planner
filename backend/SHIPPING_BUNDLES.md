@@ -2,8 +2,25 @@
 
 `app/data/shipping_bundle_registry.json` maps an ordered parent SKU to component
 SKUs and quantities per bundle. It is maintained separately from package records,
-so saving product measurements does not remove mappings. The Package Database
-shows matching mappings; this first version does not include a mapping editor.
+so saving product measurements does not remove mappings. Shipping → Manage Bundles
+provides searchable, paginated mappings and an editor for component SKUs and
+quantities per bundle. Component SKUs can be searched in the Package Database or
+entered directly. Missing package data produces warnings; measurements are not
+invented or marked verified by saving a mapping.
+
+User edits are atomic overrides in `app/data/shipping_bundle_overrides.json`,
+ignored by Git. Back up this file with other shipping runtime data. It persists
+across app restarts and normal source updates on this backend, but is not a cloud
+database or automatically shared with separate installations. Default mapping
+deletions persist as tombstones. Saves include a revision check and user/time;
+both save and removal require the shipping identity and Planner authorization.
+The existing single-process local-runtime assumption applies to writes.
+
+Changing a mapping clears loaded packing drafts in the current Shipping screen
+to prevent reuse of an old plan. Other open screens must reload their shipments.
+The parent SKU is immutable during edits; remove/recreate to correct it. Removal
+does not delete measurements: subsequent packing reverts to the parent package
+record, if present. Nested bundles are rejected with instructions to flatten them.
 
 Only use a mapping when components are picked as separate physical packages.
 Prepacked retail sets should continue using their own package record.

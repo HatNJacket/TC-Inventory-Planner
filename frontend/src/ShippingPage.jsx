@@ -7,6 +7,7 @@ import CartonCatalogView from './CartonCatalog';
 import ConfirmBoxUsage from './ConfirmBoxUsage';
 import ShipmentIntelligence from './ShipmentIntelligence';
 import BundleBreakdown from './BundleBreakdown';
+import BundleManager from './BundleManager';
 import { dimensionToInches, dimensionForInput, packageDimensionsText } from './shippingUnits';
 
 const GREEN = '#2aad51';
@@ -274,7 +275,7 @@ function HistoryView({ onToast }) {
 }
 
 const emptyRecord={sku:'',product_name:'',part:'',dimensions_in:['','',''],verification_status:'Verified — Warehouse',weight_kg:'',shipping_behavior:'standard',carrier_notes:'',notes:'',packages_per_unit:1,source_parts_per_unit:1};
-function PackageDatabaseView({ onToast, currentUser }) {
+function PackageDatabaseView({ onToast, currentUser, bundleVersion }) {
   const [query,setQuery]=useState('');const [data,setData]=useState(null);const [loading,setLoading]=useState(false);const [edit,setEdit]=useState(emptyRecord);const [saving,setSaving]=useState(false);const requestId=useRef(0);
   const [dimensionUnit,setDimensionUnit]=useState('cm');
   const [dimensionDraft,setDimensionDraft]=useState(['','','']);
@@ -288,7 +289,7 @@ function PackageDatabaseView({ onToast, currentUser }) {
     setEdit(previous=>({...previous,dimensions_in:(previous.dimensions_in||['','','']).map((v,i)=>i===index?dimensionToInches(value,dimensionUnit):v)}));
   }
   async function load(q=query){const id=++requestId.current;setLoading(true);try{const result=await api.getShippingPackageDatabase(q,50);if(id===requestId.current)setData(result);}catch(e){if(id===requestId.current)onToast?.(e.message,'error');}finally{if(id===requestId.current)setLoading(false);}}
-  useEffect(()=>{load('');},[]);
+  useEffect(()=>{load();},[bundleVersion]);
   function choose(r){setEdit({...r,dimensions_in:[...(r.dimensions_in||['','',''])]});setDimensionDraft((r.dimensions_in||['','','']).map(v=>dimensionForInput(v,dimensionUnit)));}
   function field(name,value){setEdit(prev=>({...prev,[name]:value}));}
   async function save(){setSaving(true);try{const rec={...edit,dimensions_in:(edit.dimensions_in||[]).map(Number),weight_kg:edit.weight_kg===''?null:Number(edit.weight_kg),packages_per_unit:Number(edit.packages_per_unit||1),source_parts_per_unit:Number(edit.source_parts_per_unit||1),measured_by:edit.measured_by||currentUser||''};const r=await api.saveShippingPackageRecord(rec);onToast?.(`Saved ${r.record.sku}`);resetRecord();await load();}catch(e){onToast?.(e.message,'error');}finally{setSaving(false);}}
@@ -298,6 +299,7 @@ function PackageDatabaseView({ onToast, currentUser }) {
 }
 
 export default function ShippingPage({ onToast, entrySignal }) {
+  const [bundleVersion,setBundleVersion]=useState(0);
   const [view,setView]=useState('packing');
   const [user,setUser]=useState(null);
   const [visited,setVisited]=useState(new Set(['packing']));
@@ -307,7 +309,7 @@ export default function ShippingPage({ onToast, entrySignal }) {
   },[entrySignal]);
   function signIn(profile) { api.setShippingUser(profile); setUser(profile); }
   function selectView(id) { setVisited(previous=>new Set([...previous,id])); setView(id); }
-  const tabs=[['packing','Pack an Order'],['custom','Custom Shipment'],['registry','Package Database'],['catalog','Carton Catalog'],['history','Packing History']];
+  const tabs=[['packing','Pack an Order'],['custom','Custom Shipment'],['registry','Package Database'],['bundles','Manage Bundles'],['catalog','Carton Catalog'],['history','Packing History']];
   // Keep visited views mounted so tab changes preserve the order, plan and drafts.
   // Hiding the workspace during identity selection also prevents unattributed saves.
   return <div style={{padding:'28px 34px 60px',maxWidth:1500,margin:'0 auto'}}>
@@ -318,9 +320,10 @@ export default function ShippingPage({ onToast, entrySignal }) {
         <button style={secondaryButton} onClick={()=>{setUser(null);api.setShippingUser(null);}}>Signed in as {user?.name} · Switch user</button>
       </div>
       <div style={{display:'flex',gap:7,flexWrap:'wrap',marginBottom:18}}>{tabs.map(([id,label])=><button key={id} onClick={()=>selectView(id)} style={{border:'1px solid',borderColor:view===id?GREEN:'var(--border)',borderRadius:999,padding:'8px 13px',background:view===id?'#eefbf3':'#fff',color:view===id?'#16723b':'var(--text)',fontWeight:800,cursor:'pointer'}}>{label}</button>)}</div>
-      <div hidden={view!=='packing'}><PackingView onToast={onToast} currentUser={user?.name}/></div>
-      {visited.has('custom')&&<div hidden={view!=='custom'}><PackingView custom onToast={onToast} currentUser={user?.name}/></div>}
-      {visited.has('registry')&&<div hidden={view!=='registry'}><PackageDatabaseView onToast={onToast} currentUser={user?.name}/></div>}
+      <div hidden={view!=='packing'}><PackingView key={bundleVersion} onToast={onToast} currentUser={user?.name}/></div>
+      {visited.has('custom')&&<div hidden={view!=='custom'}><PackingView key={bundleVersion} custom onToast={onToast} currentUser={user?.name}/></div>}
+      {visited.has('registry')&&<div hidden={view!=='registry'}><PackageDatabaseView bundleVersion={bundleVersion} onToast={onToast} currentUser={user?.name}/></div>}
+      {visited.has('bundles')&&<div hidden={view!=='bundles'}><BundleManager onChanged={()=>setBundleVersion(v=>v+1)}/></div>}
       {visited.has('catalog')&&<div hidden={view!=='catalog'}><CartonCatalogView onToast={onToast} active={view==='catalog'&&!!user}/></div>}
       {view==='history'&&<HistoryView onToast={onToast}/>}
     </div>

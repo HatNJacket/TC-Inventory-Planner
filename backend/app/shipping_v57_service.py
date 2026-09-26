@@ -118,7 +118,7 @@ def registry_payload(query: str = "", *, limit: int = 50) -> dict[str, Any]:
     bundles = [b for b in load_bundles().values() if not q or q in b['sku'].lower()
                or any(q in c['sku'].lower() for c in b['components'])]
     return {"status": "ok", "count": total, "records": records[:limit], "truncated": total > limit,
-            "bundles": bundles}
+            "bundles": bundles[:limit]}
 
 
 def normalize_registry_record(raw: dict[str, Any], *, existing_id: str | None = None, measured_by_default: str = "") -> dict[str, Any]:

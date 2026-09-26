@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from .config import config
 from . import shipping_users
+from . import shipping_bundles
 from .shipping_custom import custom_shipment
 from .shipping_stock_import import preview_import, apply_import
 from .shipping_pdf_import import extract_pdf_import
@@ -6582,6 +6583,32 @@ def shipping_package_database(
     token: str = Depends(verify_token),
 ):
     return shipping_registry_records(q, limit=limit)
+
+
+@app.get('/api/shipping/bundles')
+def shipping_bundle_list(q: str = Query(''), offset: int = Query(0, ge=0),
+                         limit: int = Query(50, ge=1, le=50), token: str = Depends(verify_token)):
+    return shipping_bundles.bundle_list(q, offset, limit)
+
+
+@app.post('/api/shipping/bundles')
+def shipping_bundle_save(payload: dict, user: str = Depends(current_shipping_user)):
+    try:
+        return shipping_bundles.save_bundle(payload, user)
+    except shipping_bundles.BundleConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete('/api/shipping/bundles')
+def shipping_bundle_delete(payload: dict, user: str = Depends(current_shipping_user)):
+    try:
+        return shipping_bundles.delete_bundle(payload, user)
+    except shipping_bundles.BundleConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/shipping/package-database")

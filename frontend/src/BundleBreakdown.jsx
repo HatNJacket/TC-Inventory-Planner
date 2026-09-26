@@ -9,6 +9,6 @@ export default function BundleBreakdown({ bundles = [], registry = false }) {
         <li key={component.sku}>{component.quantity} × {component.sku}</li>
       )}</ul>
     </div>)}
-    {registry && <p style={{fontSize:12,marginBottom:0}}>Edit measurements and weights on the component SKU records below. Mappings are maintained separately from package records.</p>}
+    {registry && <p style={{fontSize:12,marginBottom:0}}>Edit measurements and weights on the component SKU records below. Use Manage Bundles to add or change mappings.</p>}
   </section>;
 }

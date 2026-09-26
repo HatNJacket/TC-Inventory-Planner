@@ -24,6 +24,7 @@ export default function CustomShipmentBuilder({ onShipment, onChange, busy }) {
       if (id === sequence.current) {
         const unique = new Map();
         data.records.forEach(record => { const key = record.sku.toLowerCase(); if (!unique.has(key)) unique.set(key, record); });
+        (data.bundles || []).forEach(bundle => unique.set(bundle.sku.toLowerCase(), {sku:bundle.sku,product_name:'Bundle — expands into component packages'}));
         setResults({ records: [...unique.values()], truncated: data.truncated });
       }
     } catch (e) { if (id === sequence.current) setError(e.message); }

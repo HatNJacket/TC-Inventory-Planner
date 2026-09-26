@@ -1418,6 +1418,16 @@ export async function getShippingPackingHistory(limit = 200) {
   return apiFetch('/shipping/packing-history?limit=' + encodeURIComponent(String(limit)));
 }
 
+export function getShippingBundles(query = '', offset = 0) {
+  return apiFetch('/shipping/bundles?' + new URLSearchParams({q:query, offset:String(offset), limit:'50'}));
+}
+export function saveShippingBundle(bundle, revision, originalSku) {
+  return apiFetch('/shipping/bundles', {method:'POST', body:JSON.stringify({bundle, revision, original_sku:originalSku})});
+}
+export function deleteShippingBundle(sku, revision) {
+  return apiFetch('/shipping/bundles', {method:'DELETE', body:JSON.stringify({sku, revision})});
+}
+
 export function getShippingShipmentHistory(offset = 0) {
   return apiFetch('/shipping/shipment-history?limit=50&offset=' + encodeURIComponent(offset));
 }
