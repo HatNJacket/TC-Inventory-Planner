@@ -32,6 +32,7 @@ export default function CartonCatalog({ onToast, active }) {
   const [preview,setPreview]=useState(null);
   const [importBusy,setImportBusy]=useState(false);
   const [importError,setImportError]=useState('');
+  const [importNotes,setImportNotes]=useState([]);
   const rows=data?.inventory||[];
   const dirty=rows.some(row=>differs(draft[row.key],row));
   const busy=loading||saving||importBusy||stocktakeOpen;
@@ -49,8 +50,8 @@ export default function CartonCatalog({ onToast, active }) {
     }catch(e){setError(e.message);}finally{setSaving(false);}
   }
   async function previewFile(){
-    setImportBusy(true);setImportError('');setPreview(null);
-    try{const result=await api.previewShippingStockFile(file,mode,unit);setSource(result.csv);setPreview({...result,request_id:crypto.randomUUID()});}
+    setImportBusy(true);setImportError('');setPreview(null);setImportNotes([]);
+    try{const result=await api.previewShippingStockFile(file,mode,unit);setSource(result.csv);setImportNotes(result.notes||[]);setPreview({...result,request_id:crypto.randomUUID()});}
     catch(e){setImportError(e.message);}finally{setImportBusy(false);}
   }
   async function previewEdits(){
@@ -93,14 +94,15 @@ export default function CartonCatalog({ onToast, active }) {
       {dirty&&<p role="alert">Save or reload your carton edits before importing.</p>}
       <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'end'}}>
         <label>Import action<select aria-label="Import action" style={input} disabled={importBusy} value={mode} onChange={e=>{setMode(e.target.value);setPreview(null);}}><option value="receive">Receive delivery — add to stock</option><option value="count">Physical count — replace stock</option></select></label>
-        <label>PDF dimension units<select aria-label="PDF dimension units" style={input} disabled={importBusy} value={unit} onChange={e=>{setUnit(e.target.value);setSource('');setPreview(null);}}><option value="">Select units on PDF</option><option value="in">Inches</option><option value="cm">Centimetres</option></select></label>
+        <label>PDF dimension units<select aria-label="PDF dimension units" style={input} disabled={importBusy} value={unit} onChange={e=>{setUnit(e.target.value);setSource('');setPreview(null);setImportNotes([]);}}><option value="">Auto-detect Uline invoice</option><option value="in">Inches</option><option value="cm">Centimetres</option></select></label>
         <input aria-label="Stock import file" type="file" accept=".pdf,.csv" disabled={busy||dirty} onChange={e=>{setFile(e.target.files?.[0]||null);setSource('');setPreview(null);setImportError('');}}/>
-        <button style={button} disabled={busy||dirty||!file||(file.name.toLowerCase().endsWith('.pdf')&&!unit)} onClick={previewFile}>Preview file</button>
+        <button style={button} disabled={busy||dirty||!file} onClick={previewFile}>Preview file</button>
         <button style={button} disabled={!data} onClick={template}>Download CSV template</button>
       </div>
       <p style={{fontSize:12}}>PDFs need selectable text and a size/quantity table. For unsupported layouts or scans, use the CSV template. Blank minimum/target cells in an import keep your existing settings.</p>
       {importBusy&&<p role="status">Processing stock import…</p>}
       {importError&&<p role="alert" style={{color:'#b91c1c'}}>{importError}</p>}
+      {!!source&&importNotes.map((note,index)=><p key={index} style={{padding:10,background:'#eff6ff',borderRadius:8}}>{note}</p>)}
       {source&&<details><summary>Review or correct extracted rows</summary><textarea aria-label="Extracted stock CSV" rows={8} style={{...input,fontFamily:'monospace',marginTop:10}} disabled={importBusy} value={source} onChange={e=>{setSource(e.target.value);setPreview(null);}}/><button style={button} disabled={busy||dirty} onClick={previewEdits}>Preview corrected rows</button></details>}
       {preview&&<div style={{marginTop:14}}>
         <strong>{preview.mode==='receive'?'Delivery quantities will be added to existing stock.':'Physical counts will replace stock for these sizes only.'}</strong>

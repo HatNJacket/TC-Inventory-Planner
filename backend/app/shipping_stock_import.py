@@ -36,7 +36,7 @@ def preview_import(text, mode):
                     raise ValueError('Dimensions must be positive numbers.')
                 key = stock._carton_key(dims)
                 if key not in by_key:
-                    raise ValueError('Box size is not in the catalog. Check dimensions and units.')
+                    raise ValueError(f'Box size is not in the catalog ({key} in). Check dimensions and units.')
                 if key in seen:
                     raise ValueError('Duplicate box size in this import.')
                 seen.add(key)
@@ -45,7 +45,7 @@ def preview_import(text, mode):
                 if quantity is None:
                     raise ValueError('Quantity is required; enter 0 explicitly for empty stock.')
                 if mode == 'receive' and current['quantity'] is None:
-                    raise ValueError('Current stock is unknown. Import a physical count before adding deliveries.')
+                    raise ValueError(f'{key} in: current stock is unknown. Use Check shelf stock to record the boxes already on hand (0 if none), then preview this delivery again.')
                 change = {'dimensions': current['dimensions'], 'quantity': quantity}
                 for field in ('minimum', 'target'):
                     if str(raw.get(field) or '').strip():

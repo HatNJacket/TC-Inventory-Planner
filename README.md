@@ -103,6 +103,19 @@ and quantity/shipped columns. Scanned PDFs, fractional dimension text and
 unrecognized layouts require the CSV template. Quantities must be individual
 box totals. Sizes must match the existing catalog.
 
+Uline text invoices with Qty Ordered / U/M / Back Ordered / Item Number columns
+are supported, including wrapped box descriptions. The preview excludes non-box
+purchases and checks quantity against line pricing. `C` means pricing per 100;
+the printed quantity is still the individual-box total. Review actual delivered
+quantities before applying. Select **Auto-detect Uline invoice**; other formats
+still require a dimension unit. Unknown on-hand stock must be counted first
+(enter zero only when none are already on the shelf).
+
+The physical-count table scrolls independently with fixed headings and prominent
+Save/Cancel controls outside the list. Invalid counts show field-level reasons.
+Future shopping-list bundle equivalents are deferred until supplier bundle sizes
+are confirmed; on-hand stock will continue to be tracked as individual boxes.
+
 CSV headers: `length,width,height,unit,quantity,minimum,target` (the last two are
 optional). Units can be `cm` or `in`; dimension order does not affect matching.
 Blank minimum/target cells retain existing thresholds. Duplicates, unknown sizes,

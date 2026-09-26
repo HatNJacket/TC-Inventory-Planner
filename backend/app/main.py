@@ -26,7 +26,7 @@ from .config import config
 from . import shipping_users
 from .shipping_custom import custom_shipment
 from .shipping_stock_import import preview_import, apply_import
-from .shipping_pdf_import import pdf_to_csv
+from .shipping_pdf_import import extract_pdf_import
 from .shipping_optimizer import InventoryConflict
 from .shipping_stock_actions import apply_stocktake, confirm_usage
 from .database import db
@@ -6514,13 +6514,15 @@ async def shipping_carton_import_file(file: UploadFile = File(...), mode: str = 
         raise HTTPException(status_code=400, detail="Import files smaller than 5 MB.")
     try:
         if (file.filename or "").lower().endswith(".pdf"):
-            text = await run_in_threadpool(pdf_to_csv, content, unit)
+            extracted = await run_in_threadpool(extract_pdf_import, content, unit)
+            text = extracted["csv"]
         elif (file.filename or "").lower().endswith(".csv"):
             text = content.decode("utf-8-sig")
+            extracted = {"notes": []}
         else:
             raise ValueError("Choose a PDF or CSV file.")
         preview = await run_in_threadpool(preview_import, text, mode)
-        return {**preview, "csv": text}
+        return {**preview, "csv": text, "notes": extracted["notes"]}
     except (ValueError, UnicodeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
