@@ -1,5 +1,6 @@
 """Build a shipment from registry SKUs without reading or creating a Shopify order."""
 from .shipping_registry import expand_order, lookup_sku
+from .shipping_bundles import bundle_for_sku
 
 
 def custom_shipment(payload):
@@ -24,8 +25,8 @@ def custom_shipment(payload):
         if total > 100:
             raise ValueError('Custom shipments can contain up to 100 product units.')
         records = lookup_sku(sku)
-        if not records:
+        if not records and not bundle_for_sku(sku):
             raise ValueError(f'{sku} is not in the Package Database. Add its package data first.')
-        lines.append({'id': f'custom-{index}', 'sku': sku, 'title': records[0].get('product_name') or sku,
+        lines.append({'id': f'custom-{index}', 'sku': sku, 'title': (records[0].get('product_name') if records else None) or sku,
                       'quantity': quantity, 'requires_shipping': True})
     return expand_order({'name': reference, 'source': 'custom', 'shipping_method': 'Custom shipment', 'line_items': lines})

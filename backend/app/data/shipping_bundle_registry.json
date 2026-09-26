@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "bundles": [
+    {
+      "sku": "ALP-T-3NM/3.5NM-SET",
+      "components": [
+        {"sku": "ALP-T-3NM-Ha/OIII", "quantity": 1},
+        {"sku": "ALP-T-3.5NM-SII/Hb", "quantity": 1}
+      ]
+    }
+  ]
+}

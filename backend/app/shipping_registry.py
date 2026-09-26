@@ -7,12 +7,14 @@ physical packages that the packing engine will consume in the next phase.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from .shopify_client import normalize_sku
+from .shipping_bundles import load_bundles
 
 REGISTRY_PATH = Path(__file__).resolve().parent / "data" / "shipping_package_registry.json"
 VERIFIED_STATUSES = {"Verified — Warehouse", "Confirmed — Vendor/Label"}
@@ -89,7 +91,8 @@ def _safe_float(value: Any):
     try:
         if value is None or value == "":
             return None
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -105,14 +108,46 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
     unresolved: List[Dict[str, Any]] = []
     provisional_skus = set()
     verified_skus = set()
+    bundle_expansions = []
+    bundles = load_bundles()
 
-    for line in order.get("line_items", []) or []:
+    for line_index, line in enumerate(order.get("line_items", []) or []):
         if line.get("requires_shipping") is False:
             continue
 
         sku = str(line.get("sku") or "").strip()
         qty = _safe_int(line.get("pack_quantity"), _safe_int(line.get("quantity"), 0))
         if qty <= 0:
+            continue
+
+        bundle = bundles.get(_sku_key(sku))
+        if bundle:
+            components = [{**c, 'quantity': c['quantity'] * qty} for c in bundle['components']]
+            expanded = expand_order({'line_items': [
+                {'id': f"{line.get('id') or line_index}:component:{i}",
+                 'sku': c['sku'], 'quantity': c['quantity'], 'requires_shipping': True}
+                for i, c in enumerate(components)
+            ]})
+            component_readiness = expanded['packing_readiness']
+            unresolved.extend({**u, 'line_item_id': line.get('id'), 'bundle_sku': sku,
+                               'reason': f"Bundle {sku}: {u['reason']}"}
+                              for u in component_readiness['unresolved'])
+            missing_weights = set()
+            for package in expanded['physical_packages']:
+                package.update(bundle_sku=sku, line_item_id=line.get('id'))
+                weight = package.get('weight_kg')
+                if weight is None or not math.isfinite(weight) or weight <= 0:
+                    missing_weights.add(package['sku'])
+                physical_packages.append(package)
+            for component_sku in sorted(missing_weights):
+                unresolved.append({'line_item_id': line.get('id'), 'sku': component_sku,
+                                   'bundle_sku': sku,
+                                   'reason': f'Bundle {sku}: component needs a positive stored package weight'})
+            provisional_skus.update(component_readiness['provisional_skus'])
+            verified_skus.update(component_readiness['verified_skus'])
+            enriched_items.append({**line, 'pack_quantity': qty, 'bundle_components': components,
+                                   'registry_records': [], 'registry_state': 'bundle'})
+            bundle_expansions.append({'sku': sku, 'quantity': qty, 'components': components})
             continue
 
         rows = lookup_sku(sku) if sku else []
@@ -156,7 +191,8 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
             for row in rows:
                 packages_per_unit = max(1, _safe_int(row.get("packages_per_unit"), 1))
                 dims = row.get("dimensions_in") or []
-                if len(dims) != 3:
+                parsed_dims = [_safe_float(v) for v in dims] if isinstance(dims, (list, tuple)) else []
+                if len(parsed_dims) != 3 or any(v is None or not math.isfinite(v) or v <= 0 for v in parsed_dims):
                     unresolved.append({
                         "line_item_id": line.get("id"),
                         "sku": sku,
@@ -173,7 +209,7 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
                         "part": row.get("part") or "Primary package",
                         "ordered_unit": unit_index,
                         "package_copy": copy_index,
-                        "dimensions_in": [round(float(v), 4) for v in dims],
+                        "dimensions_in": [round(v, 4) for v in parsed_dims],
                         "verification_status": row.get("verification_status") or "Unknown",
                         "weight_kg": _safe_float(row.get("weight_kg")),
                         "shipping_behavior": row.get("shipping_behavior") or "standard",
@@ -187,6 +223,7 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
         **order,
         "line_items": enriched_items,
         "physical_packages": physical_packages,
+        "bundle_expansions": bundle_expansions,
         "packing_readiness": {
             "physical_package_count": len(physical_packages),
             "unresolved_count": len(unresolved),

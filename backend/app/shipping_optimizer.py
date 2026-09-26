@@ -542,6 +542,9 @@ def _optimize_stock_aware(packages: Sequence[Package]) -> dict[str, Any]:
 def build_packing_plan(expanded_order: dict[str, Any]) -> dict[str, Any]:
     physical = list(expanded_order.get("physical_packages") or [])
     unresolved = list((expanded_order.get("packing_readiness") or {}).get("unresolved") or [])
+    if expanded_order.get('bundle_expansions') and unresolved:
+        raise ValueError('Resolve bundle component package data before planning: ' +
+                         '; '.join(f"{u.get('sku', '')}: {u['reason']}" for u in unresolved))
     fixed = []
     loose = []
     for raw in physical:
