@@ -37,6 +37,14 @@ class StockActionTests(unittest.TestCase):
             with self.assertRaises(ValueError): apply_stocktake(request, "Counter")
             self.assertEqual(stock.CARTON_INVENTORY_PATH.read_bytes(), before)
 
+    def test_policy_only_save_preserves_stock_and_count_metadata(self):
+        before = self.save(8)['inventory'][0]
+        result = stock.set_carton_stock_bulk([
+            {'dimensions': self.dim, 'minimum': 10, 'target': 40}], 'Settings editor')
+        self.assertEqual(result['inventory'][0]['quantity'], 8)
+        self.assertEqual(result['inventory'][0]['last_counted'], before['last_counted'])
+        self.assertEqual(result['shopping_list'][0]['order_quantity'], 32)
+
     def test_usage_filters_factory_and_retries_after_reload(self):
         self.save(8, minimum=7, target=40)
         request = self.usage()

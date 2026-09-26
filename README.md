@@ -88,8 +88,11 @@ their labelled inch units.
 
 ### Box stock and replenishment
 
-In **Shipping → Carton Catalog**, set **On hand**, a **Minimum**, and a higher
-**Restock target**, then save. At or below the minimum the **Box shopping list**
+In **Shipping → Carton Catalog**, **On hand** is read-only. Use **Check shelf stock**
+to correct counts, with the signed-in user and count time recorded. Set a **Minimum**
+and a higher **Restock target** on each card, then **Save reorder settings**.
+Saving reorder settings does not change stock or mark a new physical count.
+At or below the minimum the **Box shopping list**
 shows the quantity needed to reach the target. Leave both thresholds blank to
 disable monitoring for a size. Unknown stock is flagged for counting, not treated
 as zero. Download the shopping list as CSV.
