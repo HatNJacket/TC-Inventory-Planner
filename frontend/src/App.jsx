@@ -15,6 +15,7 @@ import WaitersPage from './WaitersPage';
 import PoComparisonPage from './PoComparisonPage';
 import SettingsPage from './SettingsPage';
 import ShippingPage from './ShippingPage';
+import DancingRobot from './DancingRobot';
 
 // ─── FORMATTING ─────────────────────────────────────────────────
 
@@ -1388,6 +1389,7 @@ export default function App() {
         {renderPage()}
       </div>
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      {currentPage === 'replenishment' && <DancingRobot />}
     </div>
   );
 }

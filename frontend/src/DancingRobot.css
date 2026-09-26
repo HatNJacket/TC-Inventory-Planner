@@ -1,0 +1,26 @@
+.tc-dancing-robot {
+  position: fixed;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  width: 64px;
+  height: 77px;
+  z-index: 20;
+  pointer-events: none;
+  user-select: none;
+}
+.tc-dancing-robot svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.tc-robot-bounce { transform-origin: 40px 72px; animation: tc-robot-bop 1s ease-in-out infinite; }
+.tc-robot-arm-left { transform-origin: 24px 49px; animation: tc-robot-wave .5s ease-in-out infinite alternate; }
+.tc-robot-arm-right { transform-origin: 56px 49px; animation: tc-robot-wave .5s ease-in-out infinite alternate-reverse; }
+.tc-robot-leg-left { transform-origin: 32px 68px; animation: tc-robot-step .5s ease-in-out infinite alternate; }
+.tc-robot-leg-right { transform-origin: 48px 68px; animation: tc-robot-step .5s ease-in-out infinite alternate-reverse; }
+@keyframes tc-robot-bop {
+  0%, 100% { transform: translateY(0) rotate(-5deg); }
+  25%, 75% { transform: translateY(-4px) rotate(0deg); }
+  50% { transform: translateY(0) rotate(5deg); }
+}
+@keyframes tc-robot-wave { from { transform: rotate(-20deg); } to { transform: rotate(20deg); } }
+@keyframes tc-robot-step { from { transform: rotate(-12deg); } to { transform: rotate(12deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .tc-dancing-robot * { animation: none !important; }
+}
