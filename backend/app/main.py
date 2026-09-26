@@ -28,6 +28,7 @@ from .shipping_custom import custom_shipment
 from .shipping_stock_import import preview_import, apply_import
 from .shipping_pdf_import import pdf_to_csv
 from .shipping_optimizer import InventoryConflict
+from .shipping_stock_actions import apply_stocktake, confirm_usage
 from .database import db
 from .forecasting import forecast_engine
 from .shopify_client import shopify_client
@@ -6476,6 +6477,26 @@ async def shipping_cartons_stock(
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/shipping/cartons/stocktake")
+def shipping_carton_stocktake(payload: dict, user: str = Depends(current_shipping_user)):
+    try:
+        return apply_stocktake(payload, user)
+    except InventoryConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/shipping/cartons/usage")
+def shipping_carton_usage(payload: dict, user: str = Depends(current_shipping_user)):
+    try:
+        return confirm_usage(payload, user)
+    except InventoryConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.post("/api/shipping/cartons/import/preview")
 def shipping_carton_import_preview(payload: dict, token: str = Depends(verify_token)):

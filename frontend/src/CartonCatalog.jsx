@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as api from './api';
+import CartonStocktake from './CartonStocktake';
 import { packageDimensionsText } from './shippingUnits';
 
 const card = { background:'#fff', border:'1px solid var(--border)', borderRadius:12, padding:18, marginBottom:16 };
@@ -21,6 +22,7 @@ export default function CartonCatalog({ onToast, active }) {
   const [draft,setDraft]=useState(()=>draftFor(api.getCachedShippingCartons()));
   const [loading,setLoading]=useState(true);
   const [saving,setSaving]=useState(false);
+  const [stocktakeOpen,setStocktakeOpen]=useState(false);
   const [error,setError]=useState('');
   const [importOpen,setImportOpen]=useState(false);
   const [mode,setMode]=useState('receive');
@@ -32,16 +34,17 @@ export default function CartonCatalog({ onToast, active }) {
   const [importError,setImportError]=useState('');
   const rows=data?.inventory||[];
   const dirty=rows.some(row=>differs(draft[row.key],row));
-  const busy=loading||saving||importBusy;
+  const busy=loading||saving||importBusy||stocktakeOpen;
   const shopping=data?.shopping_list||[];
   function accept(result){setData(result);setDraft(draftFor(result));setPreview(null);}
   async function load(){setLoading(true);setError('');try{accept(await api.getShippingCartons());}catch(e){setError(e.message);}finally{setLoading(false);}}
-  useEffect(()=>{if(active&&!dirty)load();},[active]);
+  async function startStocktake(){setLoading(true);setError('');try{accept(await api.getShippingCartons());setStocktakeOpen(true);}catch(e){setError(e.message);}finally{setLoading(false);}}
+  useEffect(()=>{if(active&&!dirty&&!stocktakeOpen)load();},[active]);
   function change(row,field,value){setDraft(previous=>({...previous,[row.key]:{...previous[row.key],[field]:value}}));setPreview(null);}
   async function save(){
     setSaving(true);setError('');
     try{
-      const changes=rows.filter(row=>differs(draft[row.key],row)).map(row=>({dimensions:row.dimensions,...Object.fromEntries(fields.map(field=>[field,draft[row.key][field]===''?null:Number(draft[row.key][field])]))}));
+      const changes=rows.filter(row=>differs(draft[row.key],row)).map(row=>({dimensions:row.dimensions,...Object.fromEntries(fields.filter(field=>String(draft[row.key][field])!==String(row[field]??'')).map(field=>[field,draft[row.key][field]===''?null:Number(draft[row.key][field])]))}));
       accept(await api.saveShippingCartonStock(changes,data.revision));onToast?.('Carton stock and reorder levels saved');
     }catch(e){setError(e.message);}finally{setSaving(false);}
   }
@@ -71,11 +74,12 @@ export default function CartonCatalog({ onToast, active }) {
   if(loading&&!data)return <div style={card}>Loading carton catalog…</div>;
   return <div>
     {loading&&<p role="status">Showing saved catalog · checking latest stock…</p>}
-    {error&&<p role="alert" style={{color:'#b91c1c'}}>{error} <button style={button} onClick={()=>{if(!dirty||window.confirm('Discard unsaved carton edits and load current stock?'))load();}}>Reload current stock</button></p>}
+    {error&&<p role="alert" style={{color:'#b91c1c'}}>{error} <button style={button} disabled={stocktakeOpen} onClick={()=>{if(!dirty||window.confirm('Discard unsaved carton edits and load current stock?'))load();}}>Reload current stock</button></p>}
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,marginBottom:16,flexWrap:'wrap'}}>
       <div><h2 style={{margin:0}}>Warehouse carton catalog</h2><p>{rows.length} sizes · {data?.low_stock_count||0} low · {data?.out_of_stock_count||0} out of stock · {data?.uncounted_count||0} not counted</p></div>
-      <div style={{display:'flex',gap:8}}><button style={button} onClick={()=>setImportOpen(value=>!value)}>Import box stock</button><button style={primary} onClick={save} disabled={busy||!data||!dirty}>{saving?'Saving…':'Save Carton Stock'}</button></div>
+      <div style={{display:'flex',gap:8}}><button style={button} disabled={busy||dirty||!data} onClick={startStocktake}>Check shelf stock</button><button style={button} disabled={busy} onClick={()=>setImportOpen(value=>!value)}>Import box stock</button><button style={primary} onClick={save} disabled={busy||!data||!dirty}>{saving?'Saving…':'Save Carton Stock'}</button></div>
     </div>
+    {stocktakeOpen&&<CartonStocktake data={data} onClose={()=>setStocktakeOpen(false)} onSaved={result=>{accept(result);setStocktakeOpen(false);onToast?.('Physical counts saved');}}/>}
     <section style={{...card,borderColor:shopping.length?'#f59e0b':'var(--border)'}} aria-label="Box shopping list">
       <div style={{display:'flex',justifyContent:'space-between',gap:12}}><h3 style={{marginTop:0}}>Box shopping list</h3><button style={button} disabled={!shopping.length||busy} onClick={exportList}>Download shopping list</button></div>
       <p>At or below the minimum, order enough boxes to reach the restock target. This list uses saved stock counts.</p>
@@ -85,7 +89,7 @@ export default function CartonCatalog({ onToast, active }) {
     </section>
     {importOpen&&<section style={card} aria-label="Import box stock">
       <h3>Import a PDF or CSV</h3>
-      <p>Review extracted sizes and quantities before applying. Quantities must be individual boxes, not bundles or cases. Unknown sizes and duplicate rows must be corrected.</p>
+      <p>Review extracted sizes and quantities before applying. Enter total individual box quantities. Unknown sizes and duplicate rows must be corrected.</p>
       {dirty&&<p role="alert">Save or reload your carton edits before importing.</p>}
       <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'end'}}>
         <label>Import action<select aria-label="Import action" style={input} disabled={importBusy} value={mode} onChange={e=>{setMode(e.target.value);setPreview(null);}}><option value="receive">Receive delivery — add to stock</option><option value="count">Physical count — replace stock</option></select></label>
@@ -105,7 +109,7 @@ export default function CartonCatalog({ onToast, active }) {
         <button style={primary} disabled={busy||dirty||!preview.can_apply} onClick={apply}>Apply {preview.rows.length} stock updates</button>
       </div>}
     </section>}
-    <p>Set a minimum and a higher restock target for sizes you always want available. Leave both blank to disable reorder alerts. Counts currently change through manual edits and imports; building a packing plan does not consume boxes.</p>
+    <p>Set a minimum and a higher restock target for sizes you always want available. Leave both blank to disable reorder alerts. Receive deliveries, check shelf stock, and confirm boxes used after packing. Building a packing plan does not consume boxes.</p>
     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(230px,1fr))',gap:12}}>{rows.map(row=><section key={row.key} style={{...card,borderColor:row.low_stock?'#f59e0b':'var(--border)'}}>
       <strong>{dimensions(row)}</strong><div style={{fontSize:11,color:'var(--text-light)',marginTop:4}}>{packageDimensionsText(row.dimensions,'cm')}</div>
       <div style={{color:row.quantity===0?'#b91c1c':row.low_stock?'#92400e':'var(--text-light)',fontSize:12,margin:'8px 0'}}>{row.quantity===null?'Not counted':row.quantity===0?'Out of stock':row.low_stock?'Low stock':'Counted'}</div>

@@ -162,6 +162,7 @@ def get_carton_catalog() -> dict[str, Any]:
             "dimensions": list(carton),
             "key": _carton_key(carton),
             "quantity": quantity,
+            "last_counted": payload.get("last_counted", {}).get(_carton_key(carton)),
             "tracked": quantity is not None,
             "in_stock": quantity is None or quantity > 0,
             "minimum": minimum,
@@ -184,14 +185,26 @@ def get_carton_catalog() -> dict[str, Any]:
 
 
 def set_carton_stock_bulk(changes: list[dict[str, Any]], user_name: str = "", *,
-                          expected_revision=None, mode="count", request_id=None) -> dict[str, Any]:
+                          expected_revision=None, mode="count", request_id=None,
+                          shipment_reference=None) -> dict[str, Any]:
     """Validate the entire batch before writing; receipts add to known counts."""
-    if mode not in {"count", "receive"}:
-        raise ValueError("Choose count or receive mode.")
+    if mode not in {"count", "receive", "stocktake", "consume"}:
+        raise ValueError("Choose a valid stock action.")
     if not isinstance(changes, list) or not changes or len(changes) > 500:
         raise ValueError("Provide between 1 and 500 carton changes.")
     with INVENTORY_LOCK:
         payload = _ensure_inventory()
+        shipment_key = None
+        if mode == "consume":
+            if not isinstance(shipment_reference, str) or not shipment_reference.strip() or len(shipment_reference) > 150:
+                raise ValueError("Enter a unique shipment reference (up to 150 characters).")
+            shipment_reference = shipment_reference.strip()
+            shipment_key = shipment_reference.casefold()
+            previous = payload.get("shipments", {}).get(shipment_key)
+            if previous:
+                if previous["changes"] != changes:
+                    raise InventoryConflict("Boxes were already recorded for this shipment. Review stock before making corrections.")
+                return get_carton_catalog()
         if request_id and request_id in payload.get("applied_imports", []):
             return get_carton_catalog()
         if expected_revision is not None and expected_revision != inventory_revision(payload):
@@ -225,13 +238,26 @@ def set_carton_stock_bulk(changes: list[dict[str, Any]], user_name: str = "", *,
                 if quantity is None:
                     raise ValueError("Delivery quantity cannot be blank.")
                 quantity += old
+            if mode == "stocktake" and quantity is None:
+                raise ValueError("Enter an actual count, including zero for an empty shelf.")
+            if mode == "consume":
+                if quantity is None or quantity <= 0:
+                    raise ValueError("Boxes used must be a positive whole number.")
+                if old is None:
+                    raise ValueError(f"Count carton {key} before recording boxes used; current stock is unknown.")
+                if quantity > old:
+                    raise ValueError(f"Not enough stock for carton {key}: {old} on hand. Check the physical count first.")
+                quantity = old - quantity
             previous_policy = policies.get(key, {})
             minimum = _safe_stock(raw.get("minimum", previous_policy.get("minimum")))
             target = _safe_stock(raw.get("target", previous_policy.get("target")))
             if (minimum is None) != (target is None) or (minimum is not None and target <= minimum):
                 raise ValueError(f"Carton {key}: set both minimum and target, with target greater than minimum, or leave both blank.")
             policy = {"minimum": minimum, "target": target}
-            if quantity == old and policy == {"minimum": previous_policy.get("minimum"), "target": previous_policy.get("target")}:
+            counted = mode in {"count", "stocktake"} and "quantity" in raw and quantity is not None
+            if counted:
+                payload.setdefault("last_counted", {})[key] = {"recorded_at": recorded_at, "user_name": user_name or "Unknown"}
+            if not counted and quantity == old and policy == {"minimum": previous_policy.get("minimum"), "target": previous_policy.get("target")}:
                 continue
             stock[key] = quantity
             policies[key] = policy
@@ -240,11 +266,17 @@ def set_carton_stock_bulk(changes: list[dict[str, Any]], user_name: str = "", *,
                 "dimensions": list(catalog_by_key[key]),
                 "old_quantity": old, "new_quantity": quantity,
                 "old_reorder": previous_policy, "new_reorder": policy,
-                "change_type": "delivery_import" if mode == "receive" else ("count_import" if request_id else "manual_count_bulk"),
+                "change_type": {"receive": "delivery_import", "stocktake": "stocktake", "consume": "shipment"}.get(mode, "count_import" if request_id else "manual_count_bulk"),
+                "shipment_reference": shipment_reference,
                 "user_name": user_name or "Unknown",
             })
         if request_id:
             payload["applied_imports"] = (payload.get("applied_imports", []) + [request_id])[-100:]
+        if shipment_key:
+            payload.setdefault("shipments", {})[shipment_key] = {
+                "reference": shipment_reference, "changes": changes,
+                "recorded_at": recorded_at, "user_name": user_name or "Unknown",
+            }
         _write_inventory(payload)
         return get_carton_catalog()
 

@@ -3,6 +3,7 @@ import * as api from './api';
 import ShippingSignIn from './ShippingSignIn';
 import CustomShipmentBuilder from './CustomShipmentBuilder';
 import CartonCatalogView from './CartonCatalog';
+import ConfirmBoxUsage from './ConfirmBoxUsage';
 import { dimensionToInches, dimensionForInput, packageDimensionsText } from './shippingUnits';
 
 const GREEN = '#2aad51';
@@ -256,6 +257,7 @@ function PackingView({ onToast, currentUser, custom = false }) {
         <div style={{...card,padding:18,marginBottom:18}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap',marginBottom:12}}><div><div style={{fontWeight:900,fontSize:16}}>Final shipping summary</div><div style={{fontSize:12,color:'var(--text-light)',marginTop:3}}>{packages.length} shipping package{packages.length===1?'':'s'} · final scale weight wins.</div></div><div style={{display:'flex',gap:8}}><button onClick={copySummary} style={secondaryButton}>Copy for ShipStation</button><button onClick={downloadCsv} style={secondaryButton}>Download CSV</button></div></div>
           <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:1000}}><thead><tr style={{background:'#f8faf9'}}>{['#','Type','Dimensions','Calculated weight','Final scale kg','Contents','Reminder'].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead><tbody>{packages.map(p=><tr key={p.package_number}><td style={{...td,fontWeight:900}}>{p.package_number}</td><td style={td}>{p.package_type==='warehouse_carton'?'Warehouse carton':'Factory carton'}</td><td style={td}>{dimsText(p.dimensions_in)}</td><td style={td}>{weightText(p.calculated_weight_kg)}{!p.weight_complete&&<div style={{fontSize:10,color:'#92400e',marginTop:3}}>Confirm on scale</div>}</td><td style={td}><input value={finalWeights[p.package_number]||''} onChange={e=>setFinalWeights(prev=>({...prev,[p.package_number]:e.target.value}))} placeholder="Scale" style={{...inputStyle,minWidth:95}}/></td><td style={td}>{(p.contents||[]).map((c,i)=><div key={i}>{c.sku||c.name}{c.part?` — ${c.part}`:''}{c.quantity>1?` ×${c.quantity}`:''}</div>)}</td><td style={td}>{p.stamp_accessories_inside?<strong style={{color:'#845a06'}}>ACCESSORIES INSIDE</strong>:'—'}</td></tr>)}</tbody></table></div>
         </div>
+        {plan.shipping_summary?.complete&&!planLoading&&<ConfirmBoxUsage key={JSON.stringify([order?.name,packages])} packages={packages} reference={order?.name||orderNumber} custom={custom} onToast={onToast}/>}
       </>}
     </>}
   </div>;

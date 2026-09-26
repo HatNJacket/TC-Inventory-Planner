@@ -101,7 +101,7 @@ before applying; extracted rows can be corrected as CSV and previewed again.
 PDF support requires selectable text and a table with box dimensions/description
 and quantity/shipped columns. Scanned PDFs, fractional dimension text and
 unrecognized layouts require the CSV template. Quantities must be individual
-boxes, not supplier bundles or cases. Sizes must match the existing catalog.
+box totals. Sizes must match the existing catalog.
 
 CSV headers: `length,width,height,unit,quantity,minimum,target` (the last two are
 optional). Units can be `cm` or `in`; dimension order does not affect matching.
@@ -110,6 +110,26 @@ invalid quantities, and stale previews block the import. Retrying the same apply
 request does not add a delivery twice. Stock, thresholds, and recent adjustments
 are stored in the existing local carton inventory file; persistent shared database
 storage remains a later milestone. Packing calculations do not deduct stock.
+
+Use **Check shelf stock** for a quick stocktake. Enter actual totals only for the
+sizes checked; blank rows stay unchanged and zero means an empty shelf. Review
+expected versus actual counts and the difference, then **Save physical counts**.
+Matching counts are recorded too, with the signed-in user and last-counted time.
+Pause receiving/packing those sizes during counting. If stock changes while you
+count, cancel and restart with a fresh snapshot rather than overwrite new activity.
+
+After packing a complete plan, choose **Review boxes used**, then **Confirm boxes
+used**. Only the listed warehouse cartons are deducted, one per shipping package;
+factory packaging is excluded. Confirm only when the actual boxes match the plan.
+Unknown/insufficient stock blocks confirmation and the shopping list updates from
+the new totals. This does not fulfill Shopify orders or deduct stock on plan creation.
+The order reference prevents duplicate deductions across retries and reloads.
+For a real custom shipment, enter a unique reference; do not confirm test plans.
+This first version records one confirmation per order reference; split shipments,
+reversals, and changing already-recorded box usage need a future workflow. Correct
+actual on-hand totals using stocktake if a recorded shipment was cancelled.
+Shipment deduplication records are retained in the local inventory file alongside
+stock; back up that file and run one backend process (not multiple workers).
 
 Double-click `run-local.bat`. That's it. On the first run it:
 
