@@ -1256,6 +1256,13 @@ async def receive_items(
         affected = list({it.get("sku") for it in (result.get("items") or []) if it.get("sku")})
         if affected:
             db.recalc_on_order_for_skus(affected)
+        # Book the receive in the RFID app right away, labels or not
+        # (2026-09-29) - in the background, so the Save never waits on it.
+        _rfid_book_in_background(
+            order_id,
+            {i.item_id for i in request.items if (i.received_qty or 0) > 0},
+            user,
+        )
         return result
     except Exception as e:
         logger.error(f"Error receiving items: {e}", exc_info=True)
@@ -1378,6 +1385,166 @@ async def undo_receive_item(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── RFID receiving sync (2026-09-29) ─────────────────────────────────
+# Every receive leaves a record in the RFID app, printed or not (SO 964:
+# 45 Celestron units pushed to Shopify left NO trace over there once the
+# RFID app's Review inbox was gone). The planner sends each line's
+# CUMULATIVE received count; the RFID app books only what it hasn't
+# booked yet, so Save, Push and Print can all call it - a missed call is
+# repaired by the next one and a repeat never double-counts.
+
+# Receipts before this date predate the RFID receiving bridge: those
+# boxes never got RFID labels this way and must not be booked now.
+RFID_BRIDGE_SINCE = "2026-08-25"
+_rfid_bg_tasks: set = set()
+
+
+def _rfid_reference(order: dict, order_id: int) -> str:
+    # The HUMAN reference number, never the internal id (2026-09-08);
+    # the RFID side caps it at 60 chars.
+    return (
+        f"SO {order.get('reference_number') or order_id}"
+        + (f" · {order.get('vendor')}" if order.get("vendor") else "")
+    )[:60]
+
+
+def _rfid_sync_items(order_id: int, order: dict, item_ids=None) -> list:
+    """Per line: sku, barcode and units received since the bridge went
+    live (the line's received_qty already reflects undos)."""
+    pre: dict = {}
+    conn = db._get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT stock_order_item_id, SUM(received_qty) "
+            "FROM stock_order_receipts "
+            "WHERE stock_order_id = ? AND received_at < ? "
+            "GROUP BY stock_order_item_id",
+            order_id, RFID_BRIDGE_SINCE,
+        )
+        for iid, n in cur.fetchall():
+            pre[iid] = int(n or 0)
+    finally:
+        conn.close()
+    out = []
+    for it in order.get("items") or []:
+        if item_ids is not None and it.get("id") not in item_ids:
+            continue
+        if not it.get("sku"):
+            continue
+        total = max(0, int(it.get("received_qty") or 0) - pre.get(it.get("id"), 0))
+        if total <= 0 and item_ids is None:
+            continue
+        out.append({
+            "item_id": it.get("id"),
+            "sku": it["sku"],
+            "barcode": it.get("barcode") or None,
+            "received_total": total,
+        })
+    return out
+
+
+async def _rfid_sync(order_id: int, order: dict, items: list, user: str,
+                     print_labels: bool = False, print_skus=None,
+                     timeout: float = 45) -> Optional[dict]:
+    """POST the lines to the RFID app's /api/receiving/sync. Raises on a
+    refusal so callers decide how loud to be."""
+    if not config.RFID_STATION_KEY or not items:
+        return None
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            f"{config.RFID_APP_URL.rstrip('/')}/api/receiving/sync",
+            json={
+                "reference": _rfid_reference(order, order_id),
+                "requested_by": user,
+                "items": [
+                    {k: v for k, v in i.items() if k != "item_id"}
+                    for i in items
+                ],
+                "print": print_labels,
+                "print_skus": print_skus,
+            },
+            headers={"X-Station-Key": config.RFID_STATION_KEY},
+        )
+    if resp.status_code >= 400:
+        detail = resp.text[:300]
+        try:
+            detail = resp.json().get("detail", detail)
+        except Exception:
+            pass
+        raise RuntimeError(f"RFID app refused the sync: {detail}")
+    return resp.json()
+
+
+def _rfid_book_in_background(order_id: int, item_ids: set, user: str) -> None:
+    """Save's booking: never slows or fails the Save itself."""
+    if not config.RFID_STATION_KEY or not item_ids:
+        return
+
+    async def run():
+        try:
+            order = db.get_stock_order(order_id) or {}
+            items = _rfid_sync_items(order_id, order, item_ids)
+            res = await _rfid_sync(order_id, order, items, user)
+            if res:
+                logger.info("RFID receiving sync (save) SO %s: %s",
+                            order.get("reference_number"), res.get("message"))
+        except Exception as e:
+            logger.warning(f"RFID receiving sync (save) failed: {e}")
+
+    task = asyncio.create_task(run())
+    _rfid_bg_tasks.add(task)
+    task.add_done_callback(_rfid_bg_tasks.discard)
+
+
+@app.get("/api/stock-orders/{order_id}/rfid-labels-status")
+async def rfid_labels_status(
+    order_id: int, token: str = Depends(verify_token),
+):
+    """Per line: RFID labels queued / still owed for this order - drives
+    the Print labels buttons in the Push-to-Shopify window and the
+    after-push Print button. Fail-soft: available False when the RFID
+    app can't be reached."""
+    out = {"available": False, "full_shipment": False,
+           "labels_owed": 0, "lines": {}}
+    if not config.RFID_STATION_KEY:
+        return out
+    order = db.get_stock_order(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Stock order not found")
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            resp = await client.get(
+                f"{config.RFID_APP_URL.rstrip('/')}/api/receiving/so-labels",
+                params={"reference": _rfid_reference(order, order_id)},
+                headers={"X-Station-Key": config.RFID_STATION_KEY},
+            )
+        if resp.status_code >= 400:
+            return out
+        data = resp.json()
+    except Exception as e:
+        logger.warning(f"RFID label status failed: {e}")
+        return out
+    by_sku = {(s.get("sku") or "").strip().upper(): s
+              for s in data.get("skus") or []}
+    lines = {}
+    for it in order.get("items") or []:
+        s = by_sku.get((it.get("sku") or "").strip().upper())
+        if s:
+            lines[it["id"]] = {
+                "booked_units": s.get("booked_units", 0),
+                "labels_queued": s.get("labels_queued", 0),
+                "labels_owed": s.get("labels_owed", 0),
+                "problem": s.get("problem"),
+            }
+    return {
+        "available": True,
+        "full_shipment": bool(data.get("full_shipment")),
+        "labels_owed": int(data.get("labels_owed") or 0),
+        "lines": lines,
+    }
+
+
 @app.post("/api/stock-orders/{order_id}/rfid-labels")
 async def send_rfid_labels(
     order_id: int, request: ReceiveRequest,
@@ -1402,68 +1569,46 @@ async def send_rfid_labels(
     order = db.get_stock_order(order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Stock order not found")
+    # Which lines to print (2026-09-29): the RFID receiving sync books
+    # anything not booked yet, then queues ONLY the labels still owed for
+    # these lines - before or after the Shopify push, any number of times.
+    wanted = {e.item_id for e in request.items}
     by_id = {it.get("id"): it for it in (order.get("items") or [])}
-    rfid_items = []
-    missing_sku = []
-    for entry in request.items:
-        it = by_id.get(entry.item_id)
-        if not it or (entry.received_qty or 0) <= 0:
-            continue
-        if not it.get("sku"):
-            missing_sku.append(str(entry.item_id))
-            continue
-        rfid_items.append({
-            "sku": it["sku"],
-            "quantity": int(entry.received_qty),
-            "barcode": it.get("barcode") or None,
-        })
-    if not rfid_items:
+    missing_sku = [str(i) for i in wanted
+                   if by_id.get(i) and not by_id[i].get("sku")]
+    items = _rfid_sync_items(order_id, order, wanted)
+    if not items:
         raise HTTPException(
             status_code=422,
-            detail="Nothing printable in that receive (missing SKUs or "
-                   "zero quantities).",
+            detail="Nothing printable on those lines (missing SKUs or "
+                   "nothing received).",
         )
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{config.RFID_APP_URL.rstrip('/')}/api/receiving/prints",
-                json={
-                    "items": rfid_items,
-                    "requested_by": user,
-                    # The RFID side caps reference at 60 chars. The
-                    # HUMAN reference number, never the internal id
-                    # (2026-09-08: batches read "SO 1268" for SO 945).
-                    "reference": (
-                        f"SO {order.get('reference_number') or order_id}"
-                        + (f" · {order.get('vendor')}"
-                           if order.get("vendor") else "")
-                    )[:60],
-                },
-                headers={"X-Station-Key": config.RFID_STATION_KEY},
-            )
-        if resp.status_code >= 400:
-            detail = resp.text[:300]
-            try:
-                detail = resp.json().get("detail", detail)
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code=502,
-                detail=f"RFID app refused the print request: {detail}",
-            )
-        result = resp.json()
-        if missing_sku:
-            result["skipped_no_sku"] = missing_sku
-        return result
-    except HTTPException:
-        raise
+        result = await _rfid_sync(
+            order_id, order, items, user, print_labels=True,
+            print_skus=[i["sku"] for i in items],
+        ) or {}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:
         logger.error(f"RFID label bridge error: {e}", exc_info=True)
         raise HTTPException(
             status_code=502,
             detail=f"Could not reach the RFID app: {e}",
         )
+    if result.get("full_shipment"):
+        result["message"] = result.get("message") or (
+            "Labels for this order were already printed through the RFID "
+            "app's Receive entire shipment.")
+    # The frontend's toasts read these names.
+    result.setdefault("skipped_unknown", [
+        s["sku"] for s in result.get("skus") or []
+        if (s.get("problem") or "").startswith("Not found")
+        and s["sku"].strip().upper() in {i["sku"].strip().upper() for i in items}
+    ])
+    if missing_sku:
+        result["skipped_no_sku"] = missing_sku
+    return result
 
 
 class PrepareStockItems(BaseModel):
@@ -1576,11 +1721,8 @@ class StockUpdateItem(BaseModel):
 class ApplyStockUpdateRequest(BaseModel):
     location_id: str
     items: List[StockUpdateItem]
-    # Line-item ids in this update that never had RFID labels printed
-    # (the stock-update window tracks its own Print-labels presses,
-    # 2026-08-26). Pushed-without-labels lines are relayed to the RFID
-    # app, which books them into the receiving batch WITHOUT labels and
-    # files one safety-net Review task; resolving it queues the labels.
+    # Ignored since 2026-09-29 (kept so older browsers still validate):
+    # every pushed line now syncs to the RFID app, printed or not.
     unprinted_item_ids: List[int] = []
 
 
@@ -1683,60 +1825,25 @@ async def apply_stock_update(
         except Exception as e:
             logger.warning(f"Could not sync cached stock after receive: {e}")
 
-        # RFID safety net (2026-08-26): lines pushed to Shopify WITHOUT
-        # RFID labels book into the RFID app's receiving batch label-less
-        # and file one Review task over there; resolving it queues the
-        # labels (mechanically identical to Print labels). Best effort -
-        # a bridge outage must never fail the stock push itself.
+        # RFID receiving record (2026-09-29): every pushed line is synced
+        # to the RFID app, printed or not - the sync books only what the
+        # Save's own booking missed, so a failed Save relay is repaired
+        # here (SO 964 left no record at all). Labels stay printable in
+        # this window and after it closes. Best effort - a bridge outage
+        # must never fail the stock push itself.
         rfid_safety_net = None
         try:
-            if request.unprinted_item_ids and config.RFID_STATION_KEY:
-                unprinted_ids = set(request.unprinted_item_ids)
+            if config.RFID_STATION_KEY:
                 order = db.get_stock_order(order_id) or {}
-                by_id = {
-                    it.get("id"): it for it in (order.get("items") or [])
-                }
-                rfid_items = []
-                for item in request.items:
-                    if (item.item_id in unprinted_ids
-                            and item.adjustment > 0
-                            and item.sku in pushed_by_sku):
-                        line = by_id.get(item.item_id) or {}
-                        rfid_items.append({
-                            "sku": item.sku,
-                            "quantity": int(item.adjustment),
-                            "barcode": line.get("barcode") or None,
-                        })
-                if rfid_items:
-                    import httpx
-                    async with httpx.AsyncClient(timeout=30) as client:
-                        resp = await client.post(
-                            f"{config.RFID_APP_URL.rstrip('/')}"
-                            f"/api/receiving/unprinted",
-                            json={
-                                "items": rfid_items,
-                                "requested_by": user,
-                                # Same reference as rfid-labels so both
-                                # paths land on ONE receiving batch -
-                                # the HUMAN reference number (2026-09-08).
-                                "reference": (
-                                    f"SO {order.get('reference_number') or order_id}"
-                                    + (f" · {order.get('vendor')}"
-                                       if order.get("vendor") else "")
-                                )[:60],
-                            },
-                            headers={
-                                "X-Station-Key": config.RFID_STATION_KEY,
-                            },
-                        )
-                    if resp.status_code < 400:
-                        rfid_safety_net = resp.json()
-                    else:
-                        logger.warning(
-                            "RFID safety net refused: %s", resp.text[:200]
-                        )
+                pushed_ids = {i.item_id for i in request.items
+                              if i.adjustment > 0 and i.sku in pushed_by_sku}
+                sync_items = _rfid_sync_items(order_id, order, pushed_ids)
+                res = await _rfid_sync(order_id, order, sync_items, user)
+                # Only worth a toast when it booked something new.
+                if res and res.get("booked"):
+                    rfid_safety_net = res
         except Exception as e:
-            logger.warning(f"RFID safety net relay failed: {e}")
+            logger.warning(f"RFID receiving sync (push) failed: {e}")
 
         # Full-shipment watchdog ping (2026-09-01): tell the RFID app
         # this order's Shopify stock was updated - it stamps the order
