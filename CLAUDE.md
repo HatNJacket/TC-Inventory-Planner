@@ -27,6 +27,12 @@ https://github.com/HatNJacket/TC-Inventory-Planner/actions.
 Azure sign-in is keyless OIDC: app registration
 `github-tc-planner-deploy` trusts only this repo's main branch and holds
 Contributor on tcplanneracr + Website Contributor on tc-planner-app.
+It carries TWO federated credentials: `tc-planner-main` (the classic
+subject `repo:HatNJacket/TC-Inventory-Planner:ref:refs/heads/main`) and
+`tc-planner-main-idsubject` (GitHub's ID-based subject
+`repo:HatNJacket@33941491/TC-Inventory-Planner@1325483947:ref:refs/heads/main`,
+added 2026-09-29 after the first real run failed with AADSTS700213).
+Renaming or transferring the repo changes the subject - update them.
 The repo is PUBLIC: never commit secrets (`backend/.env` and
 `setup_env.py` are gitignored).
 
