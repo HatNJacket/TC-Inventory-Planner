@@ -203,6 +203,11 @@ export async function sendRfidLabels(orderId, items) {
   });
 }
 
+// Per line: RFID labels queued / still owed (2026-09-29).
+export async function getRfidLabelStatus(orderId) {
+  return apiFetch(`/stock-orders/${orderId}/rfid-labels-status`);
+}
+
 export async function prepareStockUpdate(orderId, items = null) {
   return apiFetch(`/stock-orders/${orderId}/prepare-stock-update`, {
     method: 'POST',
