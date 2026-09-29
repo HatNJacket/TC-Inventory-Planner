@@ -43,13 +43,45 @@ const StatusBadge = ({ status }) => {
   return <span style={{ padding: '3px 10px', borderRadius: 4, fontSize: 12, fontWeight: 600, color: s.color, backgroundColor: s.bg, whiteSpace: 'nowrap' }}>{s.label}</span>;
 };
 
+// Bin input (Shopify variant metafield stock.bin - saves on blur/Enter).
+// flagged (2026-09-29): someone tried to print RFID labels for this line
+// without a bin - red box plus the note until a bin is saved.
+function BinInput({ value, saving, flagged, onChange, onSave, autoFocus }) {
+  return (
+    <div>
+      <input
+        type="text"
+        value={value}
+        placeholder="-"
+        disabled={saving}
+        autoFocus={autoFocus}
+        onChange={e => onChange(e.target.value)}
+        onBlur={onSave}
+        onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+        title="Shopify variant metafield stock.bin — edits save to Shopify on blur"
+        style={{
+          width: 80, padding: '4px 6px', borderRadius: 4,
+          border: flagged ? '2px solid #e74c3c' : '1px solid var(--border)', fontSize: 13,
+          backgroundColor: saving ? '#f1f5f9' : flagged ? '#fdecea' : 'var(--white)',
+          color: 'var(--text)',
+        }}
+      />
+      {flagged && (
+        <div style={{ color: '#c0392b', fontSize: 11, fontWeight: 600, marginTop: 3, maxWidth: 150, lineHeight: 1.25 }}>
+          Add a bin number before printing labels
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Stock Update Modal - matches Inventory Planner's "Update stock in Telescopes Canada Warehouse"
 // RFID labels (2026-09-29): every line carries its own Print button with
 // what the RFID app still owes it, and "Print all labels" sits up top by
 // the title. The receive is already booked in the RFID app at Save, so
 // printing works before OR after Update stock, as often as needed - the
 // RFID app only ever queues what's still owed.
-function StockUpdateModal({ reviewData, onApply, onCancel, applying, onPrint, printing, labelStatus, rfidPrinted }) {
+function StockUpdateModal({ reviewData, onApply, onCancel, applying, onPrint, printing, labelStatus, rfidPrinted, bin }) {
   const [selected, setSelected] = useState(new Set());
   useEffect(() => { if (reviewData?.items) setSelected(new Set(reviewData.items.map(i => i.item_id))); }, [reviewData]);
   if (!reviewData) return null;
@@ -66,6 +98,23 @@ function StockUpdateModal({ reviewData, onApply, onCancel, applying, onPrint, pr
   const busy = !!printing || applying;
   const labelCell = (item) => {
     if (rfidPrinted) return <span style={{ color: '#7f8c8d', fontSize: 12 }}>Printed in RFID {'✓'}</span>;
+    // Print was refused for want of a bin: the bin box right here, red,
+    // so it can be fixed without leaving the window; Print comes back
+    // once it's saved.
+    if (bin?.flagged(item.item_id)) {
+      return (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <BinInput
+            value={bin.value(item.item_id)}
+            saving={bin.saving(item.item_id)}
+            flagged
+            autoFocus
+            onChange={v => bin.change(item.item_id, v)}
+            onSave={() => bin.save(item.item_id)}
+          />
+        </div>
+      );
+    }
     const st = lineStatus(item);
     const owed = owedFor(item);
     const done = st && owed === 0 && (st.labels_queued || 0) > 0;
@@ -177,6 +226,10 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
   // are mid-write to Shopify so we can show a subtle saving state.
   const [binEdits, setBinEdits] = useState({});
   const [binSaving, setBinSaving] = useState(new Set());
+  // Lines whose RFID labels were refused for want of a bin (2026-09-29):
+  // their Bin input goes red with a note until a bin is saved. Only
+  // lines someone actually tried to print - never the rest of the order.
+  const [binFlagIds, setBinFlagIds] = useState(new Set());
   // Barcode (native variant field) inline edits, keyed by line-item id —
   // same pattern as bin: barcodeEdits holds in-progress text, barcodeSaving
   // tracks which items are mid-write to Shopify.
@@ -415,8 +468,24 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
     catch { setLabelStatus(null); }
   }, [orderId]);
   useEffect(() => { loadLabelStatus(); }, [loadLabelStatus]);
-  const handlePrintRfidLabels = async (selectedItems, which = 'all') => {
-    if (!selectedItems || !selectedItems.length) return;
+  // A line's bin as the user sees it (an unsaved edit counts too).
+  const binOf = (itemId) => {
+    const it = (order?.items || []).find(i => i.id === itemId);
+    const v = (binEdits[itemId] ?? it?.bin ?? '').trim();
+    return v.toLowerCase() === 'no bin assigned' ? '' : v;
+  };
+  const handlePrintRfidLabels = async (requestedItems, which = 'all') => {
+    if (!requestedItems || !requestedItems.length) return;
+    // No bin, no label (2026-09-29): a label names where the box goes.
+    // Binless lines are held back and flagged; the rest print as asked.
+    const noBin = requestedItems.filter(i => !binOf(i.item_id));
+    const selectedItems = requestedItems.filter(i => binOf(i.item_id));
+    if (noBin.length) {
+      setBinFlagIds(prev => { const n = new Set(prev); noBin.forEach(i => n.add(i.item_id)); return n; });
+      const skus = noBin.map(i => i.sku || (order?.items || []).find(o => o.id === i.item_id)?.sku || '?');
+      onToast(`Add a bin number before printing labels: ${skus.slice(0, 3).join(', ')}${skus.length > 3 ? '...' : ''}`, 'error');
+    }
+    if (!selectedItems.length) return;
     setPrintingRfid(which);
     try {
       const res = await api.sendRfidLabels(
@@ -521,6 +590,7 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
         items: prev.items.map(i => i.id === item.id ? { ...i, bin: next } : i),
       } : prev);
       setBinEdits(prev => { const n = { ...prev }; delete n[item.id]; return n; });
+      if (next) setBinFlagIds(prev => { if (!prev.has(item.id)) return prev; const n = new Set(prev); n.delete(item.id); return n; });
       onToast(next ? `Bin set: ${item.sku} -> ${next}` : `Bin cleared: ${item.sku}`);
     } catch (err) {
       onToast('Bin update failed: ' + err.message, 'error');
@@ -900,21 +970,12 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
                         to Shopify on blur. Always editable (not gated on
                         editMode) since it's an independent per-variant
                         attribute, not a PO line field. */}
-                    <input
-                      type="text"
+                    <BinInput
                       value={binEdits[item.id] ?? item.bin ?? ''}
-                      placeholder="-"
-                      disabled={binSaving.has(item.id)}
-                      onChange={e => setBinEdits(p => ({ ...p, [item.id]: e.target.value }))}
-                      onBlur={() => handleBinSave(item)}
-                      onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
-                      title="Shopify variant metafield stock.bin — edits save to Shopify on blur"
-                      style={{
-                        width: 80, padding: '4px 6px', borderRadius: 4,
-                        border: '1px solid var(--border)', fontSize: 13,
-                        backgroundColor: binSaving.has(item.id) ? '#f1f5f9' : 'var(--white)',
-                        color: 'var(--text)',
-                      }}
+                      saving={binSaving.has(item.id)}
+                      flagged={binFlagIds.has(item.id) && !binOf(item.id)}
+                      onChange={v => setBinEdits(p => ({ ...p, [item.id]: v }))}
+                      onSave={() => handleBinSave(item)}
                     />
                   </td>
                   <td style={{ padding: '8px 12px' }}>
@@ -1155,7 +1216,14 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
               the window knows which lines got labels. */}
         </>)}
       </div>
-      {showStockModal && <StockUpdateModal reviewData={reviewData} onApply={handleApplyStockUpdate} onCancel={() => { setShowStockModal(false); setReviewData(null); }} applying={applying} onPrint={handlePrintRfidLabels} printing={printingRfid} labelStatus={labelStatus} rfidPrinted={!!order?.rfid_labels_printed} />}
+      {showStockModal && <StockUpdateModal reviewData={reviewData} onApply={handleApplyStockUpdate} onCancel={() => { setShowStockModal(false); setReviewData(null); }} applying={applying} onPrint={handlePrintRfidLabels} printing={printingRfid} labelStatus={labelStatus} rfidPrinted={!!order?.rfid_labels_printed}
+        bin={{
+          flagged: id => binFlagIds.has(id) && !binOf(id),
+          value: id => binEdits[id] ?? (order.items || []).find(i => i.id === id)?.bin ?? '',
+          saving: id => binSaving.has(id),
+          change: (id, v) => setBinEdits(p => ({ ...p, [id]: v })),
+          save: id => { const it = (order.items || []).find(i => i.id === id); if (it) handleBinSave(it); },
+        }} />}
       {showAddItem && (
         <AddItemModal
           orderId={orderId}
