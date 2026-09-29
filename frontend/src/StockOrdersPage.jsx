@@ -445,7 +445,10 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
       if (res.warning) onToast(res.warning, 'error');
       else onToast(`Undid ${res.undone} \u00d7 ${res.sku}`
         + (res.shopify_adjusted ? ` (Shopify \u2212${res.shopify_adjusted})` : ''));
+      // The RFID app took the units (and their labels) back too.
+      if (res.rfid_note) onToast(res.rfid_note, /could not/i.test(res.rfid_note) ? 'error' : undefined);
       if (res.order) setOrder(res.order); else fetchOrder({ silent: true });
+      loadLabelStatus();
     } catch (err) {
       onToast('Undo failed: ' + err.message, 'error');
     }

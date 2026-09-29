@@ -1370,13 +1370,32 @@ async def undo_receive_item(
         except Exception as e:
             logger.warning(f"Could not recalc on_order after undo: {e}")
 
+        # The RFID app booked these units at Save - take them back off its
+        # receiving batch with their labels (waiting ones canceled,
+        # printed ones voided), 2026-09-29 (SO 977). Fail-soft: the undo
+        # itself already happened.
+        rfid_note = None
+        fresh_order = db.get_stock_order(order_id)
+        try:
+            if config.RFID_STATION_KEY and fresh_order:
+                items = _rfid_sync_items(order_id, fresh_order, {item_id})
+                res = await _rfid_sync(order_id, fresh_order, items, user,
+                                       allow_lower=True, timeout=20)
+                if res and res.get("unbooked"):
+                    rfid_note = res.get("message")
+        except Exception as e:
+            logger.warning(f"RFID receiving sync (undo) failed: {e}")
+            rfid_note = ("The RFID app could not be updated - its receiving "
+                         "batch may still expect a label for this unit.")
+
         return {
             "status": "ok",
             "sku": sku,
             "undone": undone,
             "shopify_adjusted": pushed_undone if not shopify_note else 0,
             "warning": shopify_note,
-            "order": db.get_stock_order(order_id),
+            "rfid_note": rfid_note,
+            "order": fresh_order,
         }
     except HTTPException:
         raise
@@ -1446,7 +1465,8 @@ def _rfid_sync_items(order_id: int, order: dict, item_ids=None) -> list:
 
 async def _rfid_sync(order_id: int, order: dict, items: list, user: str,
                      print_labels: bool = False, print_skus=None,
-                     timeout: float = 45) -> Optional[dict]:
+                     timeout: float = 45,
+                     allow_lower: bool = False) -> Optional[dict]:
     """POST the lines to the RFID app's /api/receiving/sync. Raises on a
     refusal so callers decide how loud to be."""
     if not config.RFID_STATION_KEY or not items:
@@ -1463,6 +1483,8 @@ async def _rfid_sync(order_id: int, order: dict, items: list, user: str,
                 ],
                 "print": print_labels,
                 "print_skus": print_skus,
+                # Only the Undo receive lowers a booking (2026-09-29).
+                "allow_lower": allow_lower,
             },
             headers={"X-Station-Key": config.RFID_STATION_KEY},
         )
