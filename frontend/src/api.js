@@ -1400,9 +1400,13 @@ export async function buildShippingPlanFromLoadedOrder(payload) {
   });
 }
 
-export async function getShippingPackageDatabase(query = '', limit = 50) {
-  const params = new URLSearchParams({ q: query, limit: String(limit) });
+export async function getShippingPackageDatabase(query = '', limit = 50, healthFilter = 'all', offset = 0) {
+  const params = new URLSearchParams({ q: query, limit: String(limit), health_filter:healthFilter, offset:String(offset) });
   return apiFetch('/shipping/package-database?' + params.toString());
+}
+
+export function reviewShippingPackage(recordId, payload) {
+  return apiFetch('/shipping/package-database/'+encodeURIComponent(recordId)+'/review',{method:'POST',body:JSON.stringify(payload)});
 }
 
 export async function saveShippingPackageRecord(record) {

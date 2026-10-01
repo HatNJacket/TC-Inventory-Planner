@@ -103,6 +103,7 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
     This does NOT choose cartons yet. It is the integration boundary between a
     Shopify order and the existing packing engine.
     """
+    from .shipping_package_health import revision, REVIEW
     physical_packages: List[Dict[str, Any]] = []
     enriched_items: List[Dict[str, Any]] = []
     unresolved: List[Dict[str, Any]] = []
@@ -178,6 +179,10 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         statuses = {str(row.get("verification_status") or "") for row in rows}
+        for row in rows:
+            if row.get('needs_review') or row.get('verification_status') == REVIEW:
+                unresolved.append({'line_item_id':line.get('id'),'sku':sku,'part':row.get('part'),
+                                   'reason':row.get('review_reason') or 'Package measurements need review before packing.'})
         if statuses and statuses.issubset(VERIFIED_STATUSES):
             item["registry_state"] = "verified"
             verified_skus.add(sku)
@@ -215,6 +220,7 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
                         "shipping_behavior": row.get("shipping_behavior") or "standard",
                         "carrier_notes": row.get("carrier_notes") or "",
                         "registry_id": row.get("id"),
+                        "registry_revision": revision(row),
                     })
 
         enriched_items.append(item)

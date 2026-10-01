@@ -17,18 +17,21 @@ from typing import Any
 from . import shipping_registry
 from .shipping_optimizer import Package, _optimize_stock_aware
 from .shipping_registry import PROVISIONAL_STATUS, VERIFIED_STATUSES
+from . import shipping_package_health as package_health
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 REGISTRY_PATH = DATA_DIR / "shipping_package_registry.json"
 PACKING_HISTORY_PATH = DATA_DIR / "shipping_packing_history.json"
 
-ALLOWED_VERIFICATION_STATUSES = VERIFIED_STATUSES | {PROVISIONAL_STATUS}
+ALLOWED_VERIFICATION_STATUSES = VERIFIED_STATUSES | {PROVISIONAL_STATUS, package_health.REVIEW}
 SHIPPING_BEHAVIORS = {"standard", "carrier_ready", "accessory_carrier", "must_ship_alone"}
 ACCESSORY_AUTO_REJECT_FAILURES = 3
 COMBINATION_STRONG_CONFIRM_SUCCESSES = 3
 
 
 def _safe_number(value: object, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f'{label} must be a number, not true/false')
     try:
         number = float(value)
     except (TypeError, ValueError) as exc:
@@ -68,6 +71,8 @@ def _clean_text(value: object, label: str, *, required: bool = False, max_length
 def _valid_dimensions_list(value: object) -> list[float] | None:
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         return None
+    if any(isinstance(v,bool) for v in value):
+        return None
     try:
         dims = [float(v) for v in value]
     except (TypeError, ValueError):
@@ -102,8 +107,15 @@ def _write_registry(records: list[dict[str, Any]]) -> None:
     shipping_registry.reload_registry()
 
 
-def registry_payload(query: str = "", *, limit: int = 50) -> dict[str, Any]:
+def registry_payload(query: str = "", *, limit: int = 50, health_filter: str = 'all', offset: int = 0) -> dict[str, Any]:
     records = load_registry()
+    from .shipping_bundles import load_bundles, sku_key
+    mappings=load_bundles()
+    health=package_health.health(records,mappings)
+    if health_filter != 'all':
+        if health_filter not in package_health.categories({}):
+            raise ValueError('Unknown package health filter.')
+        records=[r for r in records if sku_key(r.get('sku')) not in mappings and package_health.categories(r)[health_filter]]
     q = query.strip().lower()
     if q:
         records = [
@@ -114,11 +126,10 @@ def registry_payload(query: str = "", *, limit: int = 50) -> dict[str, Any]:
         ]
     total = len(records)
     limit = max(1, min(int(limit), 50))
-    from .shipping_bundles import load_bundles
-    bundles = [b for b in load_bundles().values() if not q or q in b['sku'].lower()
+    bundles = [b for b in mappings.values() if not q or q in b['sku'].lower()
                or any(q in c['sku'].lower() for c in b['components'])]
-    return {"status": "ok", "count": total, "records": records[:limit], "truncated": total > limit,
-            "bundles": bundles[:limit]}
+    return {"status": "ok", "count": total, "records": [{**r,'_revision':package_health.revision(r)} for r in records[offset:offset+limit]], "truncated": total > offset+limit,
+            "bundles": bundles[:limit], 'health':health}
 
 
 def normalize_registry_record(raw: dict[str, Any], *, existing_id: str | None = None, measured_by_default: str = "") -> dict[str, Any]:
@@ -158,11 +169,15 @@ def normalize_registry_record(raw: dict[str, Any], *, existing_id: str | None = 
     }
 
 
+@package_health.locked
 def save_registry_record(raw: dict[str, Any], *, measured_by_default: str = "") -> dict[str, Any]:
     record_id = _clean_text(raw.get("id"), "Record id", max_length=100)
     records = load_registry()
     existing_index = next((i for i, r in enumerate(records) if str(r.get("id")) == record_id), None) if record_id else None
     clean = normalize_registry_record(raw, existing_id=record_id or None, measured_by_default=measured_by_default)
+    if record_id and existing_index is None:
+        raise ValueError('Package record no longer exists. Reload the database.')
+    clean = package_health.prepare_save(raw, clean, records[existing_index] if existing_index is not None else None, measured_by_default)
     same_sku = [r for r in records if str(r.get("sku", "")).strip().lower() == clean["sku"].lower() and r.get("id") != clean["id"]]
     if same_sku:
         if not clean["part"] or any(not str(r.get("part", "")).strip() for r in same_sku):
@@ -174,9 +189,39 @@ def save_registry_record(raw: dict[str, Any], *, measured_by_default: str = "") 
     else:
         records[existing_index] = clean
     _write_registry(records)
-    return {"status": "ok", "record": clean}
+    return {"status": "ok", "record": {**clean,'_revision':package_health.revision(clean)}}
 
 
+@package_health.locked
+def review_registry_record(record_id, payload, user):
+    records=load_registry()
+    index=next((i for i,r in enumerate(records) if r.get('id')==record_id),None)
+    if index is None: raise ValueError('Package record was not found.')
+    old=records[index]
+    if payload.get('revision')!=package_health.revision(old):
+        raise ValueError('Package data changed. Reload the order or select the latest database record before reviewing.')
+    clean=package_health.snapshot(old)
+    reason=_clean_text(payload.get('reason'),'Review reason',max_length=1200)
+    action=payload.get('action')
+    if action=='flag':
+        if not reason: raise ValueError('Enter why the package data needs review.')
+        clean.update(needs_review=True,review_reason=reason,verification_status=package_health.REVIEW)
+    elif action=='verify':
+        if payload.get('physically_checked') is not True:
+            raise ValueError('Confirm you physically checked the packaged dimensions and weight.')
+        if not package_health.dimensions_valid(old) or not package_health.positive(old.get('weight_kg')):
+            raise ValueError('Save valid dimensions and a positive package weight before verifying.')
+        if (old.get('needs_review') or old.get('review_warnings')) and not reason:
+            raise ValueError('Explain how the flagged measurements or unit warnings were checked.')
+        clean.update(needs_review=False,review_reason='',review_warnings=[],verification_status='Verified — Warehouse',
+                     last_verified=datetime.now().astimezone().date().isoformat(),measured_by=user)
+    else: raise ValueError('Choose flag or verify.')
+    records[index]=package_health.audit(clean,old,user,action,reason)
+    _write_registry(records)
+    return {'record':{**records[index],'_revision':package_health.revision(records[index])}}
+
+
+@package_health.locked
 def delete_registry_record(record_id: str) -> dict[str, Any]:
     record_id = _clean_text(record_id, "Record id", required=True, max_length=100)
     records = load_registry()
@@ -470,6 +515,14 @@ def packing_combination_summary(host_registry_id: str, raw_accessories: object) 
 
 
 def plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    current={r.get('id'):r for r in load_registry()}
+    for item in payload.get('items',[]) if isinstance(payload.get('items'),list) else []:
+        if not isinstance(item,dict): continue
+        record=current.get(item.get('registry_id'))
+        if record and (record.get('needs_review') or record.get('verification_status')==package_health.REVIEW):
+            raise ValueError(f"{record['sku']}: package data needs review. Reload the order after correcting it.")
+        if record and item.get('registry_revision') and item['registry_revision']!=package_health.revision(record):
+            raise ValueError(f"{record['sku']}: package data changed. Reload the shipment before planning.")
     raw_items = payload.get("items")
     if not isinstance(raw_items, list) or not raw_items:
         raise ValueError("Add at least one package before building a packing plan")

@@ -46,6 +46,7 @@ from .shipping_optimizer import (
     set_carton_stock_bulk as set_shipping_carton_stock_bulk,
 )
 from .shipping_v57_service import (
+    review_registry_record as shipping_review_record,
     delete_registry_record as shipping_delete_registry_record,
     packing_combination_summary as shipping_combination_summary,
     packing_history_payload as shipping_history_payload,
@@ -6591,9 +6592,19 @@ async def shipping_v57_packing_plan(
 def shipping_package_database(
     q: str = Query(""),
     limit: int = Query(50, ge=1, le=50),
+    health_filter: str = Query('all', pattern='^(all|verified|unverified|missing_dimensions|missing_weights|needs_review|ready)$'),
+    offset: int = Query(0, ge=0),
     token: str = Depends(verify_token),
 ):
-    return shipping_registry_records(q, limit=limit)
+    return shipping_registry_records(q, limit=limit, health_filter=health_filter, offset=offset)
+
+
+@app.post('/api/shipping/package-database/{record_id}/review')
+def shipping_package_review(record_id: str, payload: dict, user: str = Depends(current_shipping_user)):
+    try:
+        return shipping_review_record(record_id, payload, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get('/api/shipping/bundles')
