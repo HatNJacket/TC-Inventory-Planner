@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from './api';
 import CartonStocktake from './CartonStocktake';
+import AddCarton from './AddCarton';
 import { packageDimensionsText } from './shippingUnits';
 
 const card = { background:'#fff', border:'1px solid var(--border)', borderRadius:12, padding:18, marginBottom:16 };
@@ -23,6 +24,8 @@ export default function CartonCatalog({ onToast, active }) {
   const [loading,setLoading]=useState(true);
   const [saving,setSaving]=useState(false);
   const [stocktakeOpen,setStocktakeOpen]=useState(false);
+  const [addOpen,setAddOpen]=useState(false);
+  const [addBusy,setAddBusy]=useState(false);
   const [error,setError]=useState('');
   const [importOpen,setImportOpen]=useState(false);
   const [mode,setMode]=useState('receive');
@@ -35,12 +38,12 @@ export default function CartonCatalog({ onToast, active }) {
   const [importNotes,setImportNotes]=useState([]);
   const rows=data?.inventory||[];
   const dirty=rows.some(row=>differs(draft[row.key],row));
-  const busy=loading||saving||importBusy||stocktakeOpen;
+  const busy=loading||saving||importBusy||stocktakeOpen||addOpen;
   const shopping=data?.shopping_list||[];
   function accept(result){setData(result);setDraft(draftFor(result));setPreview(null);}
   async function load(){setLoading(true);setError('');try{accept(await api.getShippingCartons());}catch(e){setError(e.message);}finally{setLoading(false);}}
   async function startStocktake(){setLoading(true);setError('');try{accept(await api.getShippingCartons());setStocktakeOpen(true);}catch(e){setError(e.message);}finally{setLoading(false);}}
-  useEffect(()=>{if(active&&!dirty&&!stocktakeOpen)load();},[active]);
+  useEffect(()=>{if(active&&!dirty&&!stocktakeOpen&&!addOpen)load();},[active]);
   function change(row,field,value){setDraft(previous=>({...previous,[row.key]:{...previous[row.key],[field]:value}}));setPreview(null);}
   async function save(){
     setSaving(true);setError('');
@@ -81,6 +84,8 @@ export default function CartonCatalog({ onToast, active }) {
       <div style={{display:'flex',gap:8}}><button style={button} disabled={busy||dirty||!data} onClick={startStocktake}>Check shelf stock</button><button style={button} disabled={busy} onClick={()=>setImportOpen(value=>!value)}>Import box stock</button><button style={primary} onClick={save} disabled={busy||!data||!dirty}>{saving?'Saving…':'Save reorder settings'}</button></div>
     </div>
     {stocktakeOpen&&<CartonStocktake data={data} onClose={()=>setStocktakeOpen(false)} onSaved={result=>{accept(result);setStocktakeOpen(false);onToast?.('Physical counts saved');}}/>}
+    <div style={{marginBottom:16}}><button style={primary} disabled={busy||dirty||!data} onClick={()=>{setAddOpen(true);setImportOpen(false);setPreview(null);}}>Add carton</button>{dirty&&<span style={{marginLeft:12}}>Save your reorder settings before adding a carton.</span>}</div>
+    {addOpen&&<><AddCarton revision={data?.revision} onBusy={setAddBusy} onClose={()=>setAddOpen(false)} onSaved={result=>{accept(result);setAddOpen(false);onToast?.('New carton added');}}/><button style={{...button,marginBottom:16}} disabled={addBusy||loading} onClick={load}>Reload current stock (keep new carton draft)</button></>}
     <section style={{...card,borderColor:shopping.length?'#f59e0b':'var(--border)'}} aria-label="Box shopping list">
       <div style={{display:'flex',justifyContent:'space-between',gap:12}}><h3 style={{marginTop:0}}>Box shopping list</h3><button style={button} disabled={!shopping.length||busy} onClick={exportList}>Download shopping list</button></div>
       <p>At or below the minimum, order enough boxes to reach the restock target. This list uses saved stock counts.</p>

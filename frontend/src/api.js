@@ -1383,6 +1383,10 @@ export async function applyShippingStockImport(payload) {
 export async function saveShippingStocktake(changes, revision) {
   return cacheCartons(await apiFetch('/shipping/cartons/stocktake', { method:'POST', body:JSON.stringify({changes,revision}) }));
 }
+
+export async function addShippingCarton(payload) {
+  return cacheCartons(await apiFetch('/shipping/cartons', {method:'POST', body:JSON.stringify(payload)}));
+}
 export async function confirmShippingBoxUsage(payload) {
   return cacheCartons(await apiFetch('/shipping/cartons/usage', { method:'POST', body:JSON.stringify(payload) }));
 }

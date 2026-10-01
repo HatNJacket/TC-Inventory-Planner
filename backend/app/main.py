@@ -40,6 +40,7 @@ from .shipping_registry import (
     registry_status as shipping_registry_status,
 )
 from .shipping_optimizer import (
+    add_carton as add_shipping_carton,
     build_packing_plan as build_shipping_packing_plan,
     get_carton_catalog as shipping_carton_catalog,
     set_carton_stock_bulk as set_shipping_carton_stock_bulk,
@@ -6479,6 +6480,16 @@ async def shipping_cartons_stock(
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post('/api/shipping/cartons')
+def shipping_carton_create(payload: dict, user: str = Depends(current_shipping_user)):
+    try:
+        return add_shipping_carton(payload, user)
+    except InventoryConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/api/shipping/cartons/stocktake")
 def shipping_carton_stocktake(payload: dict, user: str = Depends(current_shipping_user)):

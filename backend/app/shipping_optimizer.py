@@ -116,10 +116,49 @@ def load_catalog() -> list[tuple[float, float, float]]:
     payload = json.loads(CARTON_CATALOG_PATH.read_text(encoding="utf-8"))
     if payload.get("unit") != "inches":
         raise ValueError("Shipping carton catalog must use inches")
-    cartons = [tuple(float(v) for v in dims) for dims in payload.get("cartons", [])]
-    if any(len(c) != 3 or any(v <= 0 for v in c) for c in cartons):
+    custom = _ensure_inventory().get('custom_cartons', []) if CARTON_INVENTORY_PATH.exists() else []
+    cartons = [tuple(float(v) for v in dims) for dims in payload.get("cartons", []) + custom]
+    if any(len(c) != 3 or any(not math.isfinite(v) or v <= 0 for v in c) for c in cartons):
         raise ValueError("Shipping carton catalog contains invalid dimensions")
-    return cartons  # type: ignore[return-value]
+    return list({_carton_key(c): c for c in cartons}.values())
+
+
+def add_carton(raw: dict, user_name: str) -> dict:
+    """Atomically save a new size and opening stock in local inventory, not the seed."""
+    unit = raw.get('unit')
+    if unit not in ('cm', 'in'):
+        raise ValueError('Choose centimetres or inches.')
+    values = raw.get('dimensions')
+    if not isinstance(values, list) or len(values) != 3:
+        raise ValueError('Enter length, width, and height.')
+    if any(isinstance(v, bool) or _safe_float(v) is None or float(v) <= 0 for v in values):
+        raise ValueError('Dimensions must be positive finite numbers.')
+    dims = sorted(round(float(v) / (2.54 if unit == 'cm' else 1), 6) for v in values)
+    if any(v <= 0 for v in dims):
+        raise ValueError('Dimensions are too small to store.')
+    quantity = _safe_stock(raw.get('quantity'))
+    minimum, target = _safe_stock(raw.get('minimum')), _safe_stock(raw.get('target'))
+    if (minimum is None) != (target is None) or (minimum is not None and target <= minimum):
+        raise ValueError('Enter both minimum and target, with target greater than minimum, or leave both blank.')
+    with INVENTORY_LOCK:
+        payload = _ensure_inventory()
+        if raw.get('revision') != inventory_revision(payload):
+            raise InventoryConflict('Carton stock changed. Reload current stock, review the new carton, and save again.')
+        key = _carton_key(dims)
+        if any(all(abs(a-b) <= TOLERANCE for a,b in zip(dims, sorted(c))) for c in load_catalog()):
+            raise ValueError('This carton size already exists, possibly with dimensions in a different order. Use Check shelf stock for its quantity.')
+        from datetime import datetime, timezone
+        recorded_at = datetime.now(timezone.utc).isoformat()
+        payload.setdefault('custom_cartons', []).append(dims)
+        payload['stock'][key] = quantity
+        payload['reorder'][key] = {'minimum': minimum, 'target': target}
+        if quantity is not None:
+            payload.setdefault('last_counted', {})[key] = {'recorded_at': recorded_at, 'user_name': user_name}
+        payload['adjustments'].append({'key':key, 'dimensions':dims, 'old_quantity':None,
+            'new_quantity':quantity, 'old_reorder':{}, 'new_reorder':payload['reorder'][key],
+            'change_type':'carton_created', 'recorded_at':recorded_at, 'user_name':user_name})
+        _write_inventory(payload)
+        return get_carton_catalog()
 
 
 def _ensure_inventory() -> dict[str, Any]:
