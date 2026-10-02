@@ -154,14 +154,21 @@ function combinationText(combo) {
   return 'New / unproven combination';
 }
 
-function PackingView({ onToast, currentUser, custom = false, onPackageChanged }) {
+function PackingView({ onToast, currentUser, custom = false, onPackageChanged, packageVersion = 0 }) {
   const [orderNumber,setOrderNumber]=useState(''); const [order,setOrder]=useState(null); const [rows,setRows]=useState([]); const [loading,setLoading]=useState(false); const [error,setError]=useState('');
   const [plan,setPlan]=useState(null); const [planLoading,setPlanLoading]=useState(false); const [carrierData,setCarrierData]=useState({}); const [fitDraft,setFitDraft]=useState({}); const [notes,setNotes]=useState({}); const [detailsOpen,setDetailsOpen]=useState(false); const [finalWeights,setFinalWeights]=useState({}); const firstLookup=useRef(true);
   const destination=order?.shipping_address||{}; const readiness=order?.packing_readiness||{};
+  const requestVersion=useRef(0),loadedReference=useRef(''),previousPackageVersion=useRef(packageVersion);
+  useEffect(()=>{
+    if(previousPackageVersion.current===packageVersion)return;
+    previousPackageVersion.current=packageVersion;
+    if(!custom&&loadedReference.current)loadOrder(null,{value:loadedReference.current,refresh:true});
+  },[packageVersion]);
+  useEffect(()=>()=>{requestVersion.current+=1;},[]);
   const hostRows=useMemo(()=>rows.filter(r=>r.shipping_behavior==='accessory_carrier'),[rows]);
   const standardRows=useMemo(()=>rows.filter(r=>r.shipping_behavior==='standard'),[rows]);
 
-  async function refreshCarrierData(nextRows=rows) {
+  async function refreshCarrierData(nextRows=rows,version=requestVersion.current) {
     const hosts=nextRows.filter(r=>r.shipping_behavior==='accessory_carrier' && r.registry_id);
     const standards=nextRows.filter(r=>r.shipping_behavior==='standard');
     const entries=await Promise.all(hosts.map(async host=>{
@@ -173,14 +180,21 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged })
         return [host.key,{summary,combo}];
       } catch(err) { return [host.key,{error:err?.message||String(err)}]; }
     }));
-    setCarrierData(Object.fromEntries(entries));
+    if(version===requestVersion.current)setCarrierData(Object.fromEntries(entries));
   }
 
-  async function loadOrder(e) {
-    e?.preventDefault(); const value=orderNumber.trim(); if(!value)return; setLoading(true); setError(''); setPlan(null);
-    try { const result=await api.getShippingOrder(value); setOrder(result); const grouped=groupPhysicalPackages(result.physical_packages); setRows(grouped); setFitDraft({}); setFinalWeights({}); await refreshCarrierData(grouped); onToast?.(`Loaded ${result.name||value} from Shopify`); }
-    catch(err){setOrder(null);setRows([]);setError(err?.message||'Could not load Shopify order');onToast?.(err?.message||'Could not load Shopify order','error');}
-    finally{setLoading(false);firstLookup.current=false;}
+  async function loadOrder(e,{value=orderNumber.trim(),refresh=false}={}) {
+    e?.preventDefault(); if(!value)return;
+    const version=++requestVersion.current;loadedReference.current=value;
+    setLoading(true);setError('');setPlan(null);setPlanLoading(false);setRows([]);setCarrierData({});setFitDraft({});setNotes({});setFinalWeights({});
+    try {
+      const result=await api.getShippingOrder(value);if(version!==requestVersion.current)return;
+      setOrder(result);const grouped=groupPhysicalPackages(result.physical_packages);setRows(grouped);
+      await refreshCarrierData(grouped,version);if(version!==requestVersion.current)return;
+      onToast?.(refresh?'Order package details refreshed. Build a new packing plan.':`Loaded ${result.name||value} from Shopify`);
+    }
+    catch(err){if(version!==requestVersion.current)return;if(!refresh)setOrder(null);setRows([]);setError(refresh?`Could not refresh package details. Your order is still open; click Load order to retry. ${err?.message||''}`:err?.message||'Could not load Shopify order');}
+    finally{if(version===requestVersion.current){setLoading(false);firstLookup.current=false;}}
   }
 
   function clearCustomShipment() {
@@ -196,12 +210,13 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged })
   }
 
   function planPayload(nextRows=rows) { return { order_reference:order?.name||orderNumber, items:nextRows.map(r=>({ sku:r.sku, product_name:r.product_name, part:r.part, registry_id:r.registry_id, registry_revision:r.registry_revision, dimensions_in:r.dimensions_in, verification_status:r.verification_status, weight_kg:r.weight_kg, shipping_behavior:r.shipping_behavior, quantity:r.quantity, packed_inside_count:r.packed_inside_count, packed_into:r.packed_into })) }; }
-  async function buildPlan(nextRows=rows) { setPlanLoading(true);setError('');try{const result=await api.buildShippingPlanFromLoadedOrder(planPayload(nextRows));setPlan(result);setFinalWeights({});onToast?.(result.message||'Packing plan created');return result;}catch(err){setError(err?.message||'Could not build packing plan');onToast?.(err?.message||'Could not build packing plan','error');return null;}finally{setPlanLoading(false);} }
+  async function buildPlan(nextRows=rows) { if(loading||!nextRows.length)return null;const version=requestVersion.current;setPlanLoading(true);setError('');try{const result=await api.buildShippingPlanFromLoadedOrder(planPayload(nextRows));if(version!==requestVersion.current)return null;setPlan(result);setFinalWeights({});onToast?.(result.message||'Packing plan created');return result;}catch(err){if(version===requestVersion.current){setError(err?.message||'Could not build packing plan');onToast?.(err?.message||'Could not build packing plan','error');}return null;}finally{if(version===requestVersion.current)setPlanLoading(false);} }
 
   function draftKey(host,row,kind){return `${host.key}::${row.key}::${kind}`;}
   function setDraft(host,row,kind,value){setFitDraft(prev=>({...prev,[draftKey(host,row,kind)]:value}));}
 
   async function saveObservation(host) {
+    const version=requestVersion.current;
     const data=carrierData[host.key]||{}; const candidates=standardRows.filter(r=>Math.max(0,r.quantity-r.packed_inside_count)>0 && !r.rejected_carrier_ids.includes(host.registry_id) && !historyFor(data.summary,r).autoReject);
     const changes=[];
     for(const row of candidates){const available=Math.max(0,row.quantity-row.packed_inside_count);const fit=Number(fitDraft[draftKey(host,row,'fit')]||0);const fail=Number(fitDraft[draftKey(host,row,'fail')]||0);if(!Number.isInteger(fit)||!Number.isInteger(fail)||fit<0||fail<0||fit+fail>available){setError(`Fit + didn't fit cannot exceed available quantity for ${row.sku}.`);return;}if(fit>0&&!VERIFIED.has(row.verification_status)){setError(`${row.sku} must be measured and verified before it can be packed inside a carrier.`);return;}if(fit+fail>0)changes.push({row,fit,fail});}
@@ -211,9 +226,10 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged })
     changes.forEach(({row,fit,fail})=>{const ex=resultMap.get(row.key)||{row,fit_qty:0,failed_qty:0};ex.fit_qty+=fit;ex.failed_qty+=fail;resultMap.set(row.key,ex);});
     const results=[...resultMap.values()].map(({row,fit_qty,failed_qty})=>({sku:row.sku,product_name:row.product_name,part:row.part,registry_id:row.registry_id,verification_status:row.verification_status,dimensions_in:row.dimensions_in,fit_qty,failed_qty}));
     try { await api.saveShippingPackingObservation({host_registry_id:host.registry_id,host_sku:host.sku,host_part:host.part,order_reference:order?.name||orderNumber,notes:notes[host.key]||'',results});
+      if(version!==requestVersion.current)return;
       const next=rows.map(r=>{const c=changes.find(x=>x.row.key===r.key);if(!c)return r;return {...r,packed_inside_count:r.packed_inside_count+c.fit,packed_into:c.fit?host.registry_id:r.packed_into,rejected_carrier_ids:c.fail?[...new Set([...r.rejected_carrier_ids,host.registry_id])]:r.rejected_carrier_ids};});
-      setRows(next);setFitDraft({});await refreshCarrierData(next);await buildPlan(next);onToast?.(`Packing observation saved as ${currentUser||'Unknown'}`);
-    } catch(err){setError(err?.message||'Could not save packing observation');}
+      setRows(next);setFitDraft({});await refreshCarrierData(next,version);if(version!==requestVersion.current)return;await buildPlan(next);if(version===requestVersion.current)onToast?.(`Packing observation saved as ${currentUser||'Unknown'}`);
+    } catch(err){if(version===requestVersion.current)setError(err?.message||'Could not save packing observation');}
   }
 
   function useLearned(host) { const data=carrierData[host.key]; if(!data?.combo)return; const candidates=standardRows.filter(r=>Math.max(0,r.quantity-r.packed_inside_count)>0 && VERIFIED.has(r.verification_status) && !r.rejected_carrier_ids.includes(host.registry_id) && !historyFor(data.summary,r).autoReject); const updates={...fitDraft};candidates.forEach(r=>{updates[draftKey(host,r,'fit')]=String(Math.max(0,r.quantity-r.packed_inside_count));updates[draftKey(host,r,'fail')]='0';});setFitDraft(updates); }
@@ -298,7 +314,7 @@ export default function ShippingPage({ onToast, entrySignal }) {
         <button style={secondaryButton} onClick={()=>{setUser(null);api.setShippingUser(null);}}>Signed in as {user?.name} · Switch user</button>
       </div>
       <div style={{display:'flex',gap:7,flexWrap:'wrap',marginBottom:18}}>{tabs.map(([id,label])=><button key={id} onClick={()=>selectView(id)} style={{border:'1px solid',borderColor:view===id?GREEN:'var(--border)',borderRadius:999,padding:'8px 13px',background:view===id?'#eefbf3':'#fff',color:view===id?'#16723b':'var(--text)',fontWeight:800,cursor:'pointer'}}>{label}</button>)}</div>
-      <div hidden={view!=='packing'}><PackingView key={bundleVersion} onPackageChanged={()=>setBundleVersion(v=>v+1)} onToast={onToast} currentUser={user?.name}/></div>
+      <div hidden={view!=='packing'}><PackingView packageVersion={bundleVersion} onPackageChanged={()=>setBundleVersion(v=>v+1)} onToast={onToast} currentUser={user?.name}/></div>
       {visited.has('custom')&&<div hidden={view!=='custom'}><PackingView key={bundleVersion} onPackageChanged={()=>setBundleVersion(v=>v+1)} custom onToast={onToast} currentUser={user?.name}/></div>}
       {visited.has('registry')&&<div hidden={view!=='registry'}><PackageDatabaseView bundleVersion={bundleVersion} onChanged={()=>setBundleVersion(v=>v+1)} onToast={onToast} currentUser={user?.name}/></div>}
       {visited.has('bundles')&&<div hidden={view!=='bundles'}><BundleManager onChanged={()=>setBundleVersion(v=>v+1)}/></div>}
