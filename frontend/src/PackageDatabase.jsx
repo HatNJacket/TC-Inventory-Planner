@@ -15,6 +15,7 @@ export default function PackageDatabase({onToast,bundleVersion,onChanged,focusRe
   const [loading,setLoading]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const [checked,setChecked]=useState(false),[reason,setReason]=useState('');
   const baseline=useRef(JSON.stringify(blank())),sequence=useRef(0);
+  const editVersion=useRef(0);
   const dirty=JSON.stringify(edit)!==baseline.current;
   async function load(q=query,f=filter,start=offset){const id=++sequence.current;setLoading(true);
     try{const result=await api.getShippingPackageDatabase(q,50,f,start);if(id===sequence.current){setData(result);setFilter(f);setOffset(start);return result;}}
@@ -25,9 +26,10 @@ export default function PackageDatabase({onToast,bundleVersion,onChanged,focusRe
     if(dirty&&!window.confirm('Discard unsaved package changes and open this SKU?'))return;
     let cancelled=false;
     setQuery(focusRequest.sku);select(null,false);
+    const version=editVersion.current;
     (async()=>{
       const result=await load(focusRequest.sku,'all',0);
-      if(cancelled||!result)return;
+      if(cancelled||!result||version!==editVersion.current)return;
       const exact=result.records.filter(r=>r.sku.trim().toLowerCase()===focusRequest.sku.trim().toLowerCase());
       const match=exact.find(r=>r.id===focusRequest.registry_id)||exact.find(r=>focusRequest.part&&r.part===focusRequest.part)||(exact.length===1?exact[0]:null);
       if(match)select(match,false);
@@ -35,10 +37,11 @@ export default function PackageDatabase({onToast,bundleVersion,onChanged,focusRe
     return()=>{cancelled=true;};
   },[focusRequest]);
   function select(record,ask=true){if(ask&&dirty&&!window.confirm('Discard unsaved package changes?'))return;
+    editVersion.current+=1;
     const next=record?{...record,dimensions_in:[...(record.dimensions_in||['','',''])]}:blank();
     setEdit(next);baseline.current=JSON.stringify(next);setDims(next.dimensions_in.map(v=>dimensionForInput(v,unit)));setChecked(false);setReason('');setError('');}
-  function field(name,value){setEdit(e=>({...e,[name]:value}));setChecked(false);}
-  function dimension(i,value){setDims(d=>d.map((v,j)=>i===j?value:v));setEdit(e=>({...e,dimensions_in:e.dimensions_in.map((v,j)=>i===j?dimensionToInches(value,unit):v)}));setChecked(false);}
+  function field(name,value){editVersion.current+=1;setEdit(e=>({...e,[name]:value}));setChecked(false);}
+  function dimension(i,value){editVersion.current+=1;setDims(d=>d.map((v,j)=>i===j?value:v));setEdit(e=>({...e,dimensions_in:e.dimensions_in.map((v,j)=>i===j?dimensionToInches(value,unit):v)}));setChecked(false);}
   function changeUnit(next){setDims(edit.dimensions_in.map(v=>dimensionForInput(v,next)));setUnit(next);}
   const validDims=edit.dimensions_in.length===3&&edit.dimensions_in.every(v=>v!==''&&Number.isFinite(Number(v))&&Number(v)>0);
   const validWeight=edit.weight_kg!==''&&edit.weight_kg!=null&&Number.isFinite(Number(edit.weight_kg))&&Number(edit.weight_kg)>0;
@@ -81,7 +84,7 @@ export default function PackageDatabase({onToast,bundleVersion,onChanged,focusRe
       </section>
       <section style={card} aria-label="Package editor">
         <div style={{display:'flex',justifyContent:'space-between'}}><h3 style={{marginTop:0}}>{edit.id?'Edit package record':'Add package record'}</h3><button style={button} disabled={busy} onClick={()=>select(null)}>New</button></div>
-        <fieldset disabled={busy} style={{padding:0,margin:0,border:0,display:'grid',gap:12}}>
+        <fieldset disabled={busy||loading} style={{padding:0,margin:0,border:0,display:'grid',gap:12}}>
           {['sku','product_name','part'].map(name=><label key={name}>{name==='sku'?'SKU':name==='part'?'Part':'Product name'}<input aria-label={`Package ${name}`} style={input} value={edit[name]||''} onChange={e=>field(name,e.target.value)}/></label>)}
           <label>Dimension units<select aria-label="Dimension units" style={input} value={unit} onChange={e=>changeUnit(e.target.value)}><option value="cm">Centimetres (cm)</option><option value="in">Inches (in)</option></select></label>
           <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}}>{['Length','Width','Height'].map((name,i)=><label key={name}>{name} {unit}<input aria-label={`Package ${name.toLowerCase()}`} type="number" step="any" style={input} value={dims[i]??''} onChange={e=>dimension(i,e.target.value)}/></label>)}</div>
@@ -92,6 +95,7 @@ export default function PackageDatabase({onToast,bundleVersion,onChanged,focusRe
           {edit.shipping_behavior==='accessory_carrier'&&<label>Carrier notes<textarea style={input} value={edit.carrier_notes||''} onChange={e=>field('carrier_notes',e.target.value)}/></label>}
           <label>Notes<textarea style={input} value={edit.notes||''} onChange={e=>field('notes',e.target.value)}/></label>
         </fieldset>
+        <p style={{fontSize:12}}>Carrier-ready boxes can ship on their own or be combined inside a warehouse carton to reduce parcel count. Must ship alone always stays separate. Accessory carriers keep their assigned contents together when consolidated.</p>
         {!!warnings.length&&<div role="alert" style={{background:'#fff7dd',padding:12,marginTop:12}}>{warnings.map(w=><p key={w}>{w}</p>)}Saving these values will mark the record Needs review.</div>}
         <p style={{fontSize:12}}>Saving does not verify measurements. Changes to dimensions, weight, SKU, part, copies, or shipping behavior reset verification. No time-based expiry.</p>
         <button style={{...button,background:'#20813a',color:'#fff'}} disabled={busy} onClick={save}>{busy?'Working…':'Save Package'}</button>

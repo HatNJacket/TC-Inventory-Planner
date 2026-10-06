@@ -35,7 +35,7 @@ export default function ConfirmBoxUsage({ packages, reference, custom, packingRe
         <label>Unique shipment reference <input aria-label="Shipment reference" maxLength={150} disabled={busy||!custom} value={shipment} onChange={e=>setShipment(e.target.value)}/></label>
         {custom&&<p>For a real custom shipment, enter its unique reference. Do not confirm test plans.</p>}
         {!custom&&<label style={{display:'block',margin:'12px 0'}}><input type="checkbox" checked={realShipment} disabled={busy} onChange={e=>setRealShipment(e.target.checked)}/> This is a real shipment packed in the box shown, not a test. Include its verified packing layout in box-size analysis.</label>}
-        <p style={{fontSize:12}}>Every confirmation is recorded in Packing History. Custom shipments and unchecked test orders are excluded from suggestions. Only confirmed warehouse cartons with verified item layouts count.</p>
+        <p style={{fontSize:12}}>Every confirmation is recorded in Packing History. Custom shipments, unchecked test orders, and shipments using multiple warehouse cartons are currently excluded from box-size suggestions. Only eligible confirmed cartons with verified item layouts count.</p>
         <table style={{width:'100%',textAlign:'left',margin:'12px 0'}}><thead><tr><th>Box size</th><th>On hand</th><th>Used</th><th>After confirmation</th></tr></thead><tbody>{rows.map(row=>{
           const current=preview.inventory.find(item=>item.key===row.key)?.quantity;
           return <tr key={row.key}><td>{packageDimensionsText(row.dimensions,'in')}</td><td>{current??'Not counted'}</td><td>{row.quantity}</td><td>{current==null?'Count stock first':current-row.quantity}</td></tr>;

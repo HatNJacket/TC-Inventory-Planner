@@ -55,7 +55,7 @@ def shipment_snapshot(payload):
         record.update(eligible=True, exclusion_reason=None, carton=carton, items=items, bounds=bounds,
                       item_volume_in3=item_volume, empty_volume_in3=max(0, volume-item_volume),
                       empty_percent=round(100*(volume-item_volume)/volume, 1),
-                      stockout_substitution=layout.get('recommendation_tier') == 'next_best_available')
+                      stockout_substitution=layout.get('recommendation_tier') == 'next_best_available' or bool(layout.get('stock_constraints_present')))
     except (ValueError, TypeError, KeyError) as exc:
         record['exclusion_reason'] = str(exc)
     return record

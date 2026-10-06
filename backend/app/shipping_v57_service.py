@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from . import shipping_registry
-from .shipping_optimizer import Package, _optimize_stock_aware
 from .shipping_registry import PROVISIONAL_STATUS, VERIFIED_STATUSES
 from . import shipping_package_health as package_health
 
@@ -527,9 +526,9 @@ def plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_items, list) or not raw_items:
         raise ValueError("Add at least one package before building a packing plan")
     fixed_packages: list[dict[str, Any]] = []
-    loose_packages: list[Package] = []
     loose_rows: list[dict[str, Any]] = []
     packed_inside: list[dict[str, Any]] = []
+    total_units = 0
 
     for raw in raw_items:
         if not isinstance(raw, dict):
@@ -538,12 +537,17 @@ def plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not dims:
             raise ValueError(f"{raw.get('sku') or 'Package'} needs three positive dimensions")
         quantity = _safe_positive_int(raw.get("quantity"), "Quantity", default=1)
+        total_units += quantity
+        if total_units > 200:
+            raise ValueError('Plan up to 200 physical package units at a time.')
         packed_count = int(raw.get("packed_inside_count") or 0)
         if packed_count < 0 or packed_count > quantity:
             raise ValueError("Packed-inside quantity cannot exceed package quantity")
         behavior = str(raw.get("shipping_behavior") or "standard")
         if behavior not in SHIPPING_BEHAVIORS:
             behavior = "standard"
+        if packed_count and behavior != 'standard':
+            raise ValueError('Only standard accessories can be assigned inside an accessory carrier.')
         row = {
             "sku": str(raw.get("sku") or ""), "name": str(raw.get("product_name") or raw.get("name") or ""),
             "part": str(raw.get("part") or ""), "registry_id": str(raw.get("registry_id") or ""),
@@ -557,80 +561,35 @@ def plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "host_registry_id": row["packed_into"], "weight_kg_each": row["weight_kg"],
                 "verification_status": row["verification_status"],
             })
-        # Factory-carton behaviours always contribute their own shipping package(s).
+        # Keep factory boxes intact; consolidation may place them inside an outer carton.
         if behavior in {"carrier_ready", "accessory_carrier", "must_ship_alone"}:
             for _ in range(quantity):
                 fixed_packages.append(dict(row))
             continue
         remaining = quantity - packed_count
         for _ in range(remaining):
-            loose_packages.append(Package(tuple(dims), sku=row["sku"] or None, name=row["name"] or None,
-                                          part=row["part"] or None, verification_status=row["verification_status"] or None))
             loose_rows.append(row)
 
-    loose_result = _optimize_stock_aware(loose_packages) if loose_packages else None
-    status = "ok"
-    if loose_packages and (not loose_result or loose_result.get("status") != "ok"):
-        status = str((loose_result or {}).get("status") or "blocked")
-
-    packed_by_host: dict[str, list[dict[str, Any]]] = {}
+    from .shipping_consolidation import plan_shipments
+    # Reject orphaned/ambiguous inside assignments rather than dropping contents.
     for packed in packed_inside:
-        packed_by_host.setdefault(str(packed.get("host_registry_id") or ""), []).append(packed)
-    assigned_hosts: set[str] = set()
-    shipping_packages = []
-    for fixed in fixed_packages:
-        host_id = str(fixed.get("registry_id") or "")
-        accessories = []
-        if host_id and host_id not in assigned_hosts:
-            accessories = packed_by_host.get(host_id, [])
-            assigned_hosts.add(host_id)
-        missing = []
-        calculated = fixed.get("weight_kg")
-        if calculated is None:
-            missing.append(fixed.get("sku") or fixed.get("name") or "carrier package")
-        else:
-            calculated = float(calculated)
-        contents = [{"sku": fixed.get("sku"), "name": fixed.get("name"), "part": fixed.get("part"), "quantity": 1}]
-        for accessory in accessories:
-            contents.append({"sku": accessory.get("sku"), "name": accessory.get("name"), "part": accessory.get("part"), "quantity": accessory.get("quantity", 1)})
-            each = accessory.get("weight_kg_each")
-            if each is None: missing.append(accessory.get("sku") or accessory.get("name") or "accessory")
-            elif calculated is not None: calculated += float(each) * int(accessory.get("quantity") or 1)
-        shipping_packages.append({
-            "package_type": "factory_carton", "label": f"{fixed.get('sku') or fixed.get('name') or 'Carrier package'}" + (f" — {fixed.get('part')}" if fixed.get("part") else ""),
-            "dimensions_in": fixed.get("dimensions_in"), "calculated_weight_kg": round(calculated, 4) if calculated is not None and not missing else None,
-            "weight_complete": not missing, "weight_note": "Factory/package weight plus packed accessory weights." if not missing else "Missing stored weight for: " + ", ".join(dict.fromkeys(missing)),
-            "verification_status": fixed.get("verification_status"), "contents": contents,
-            "stamp_accessories_inside": bool(accessories and fixed.get("shipping_behavior") == "accessory_carrier"),
-        })
-    if loose_packages and loose_result and loose_result.get("status") == "ok":
-        missing = []
-        total_weight = 0.0
-        grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
-        for row in loose_rows:
-            key = (row["sku"], row["name"], row["part"])
-            grouped.setdefault(key, {"sku": row["sku"], "name": row["name"], "part": row["part"], "quantity": 0})["quantity"] += 1
-            if row["weight_kg"] is None: missing.append(row["sku"] or row["name"] or "loose item")
-            else: total_weight += float(row["weight_kg"])
-        shipping_packages.append({
-            "package_type": "warehouse_carton", "label": "Warehouse carton for remaining loose items",
-            "dimensions_in": loose_result.get("carton"), "calculated_weight_kg": round(total_weight, 4) if not missing else None,
-            "weight_complete": not missing, "weight_note": "Known loose-item weights only; outer-carton tare is not included. Confirm final weight on the scale before ShipStation." if not missing else "Missing stored weight for: " + ", ".join(dict.fromkeys(missing)) + ". Confirm final package weight on the scale before ShipStation.",
-            "verification_status": loose_result.get("confidence"), "carton_recommendation_tier": loose_result.get("recommendation_tier"),
-            "carton_stock_on_hand": loose_result.get("selected_carton_stock"), "ideal_carton": loose_result.get("ideal_carton"),
-            "contents": list(grouped.values()), "stamp_accessories_inside": False,
-        })
-    for i, package in enumerate(shipping_packages, 1): package["package_number"] = i
+        hosts=[r for r in fixed_packages if r['registry_id']==packed['host_registry_id']
+               and r['shipping_behavior']=='accessory_carrier']
+        if len(hosts)!=1:
+            raise ValueError('Packed accessories need exactly one matching accessory carrier. Reload or separate the assignments.')
+    result=plan_shipments(loose_rows,fixed_packages,packed_inside)
+    shipping_packages=result['packages']
+    layouts=result['layouts']
+    complete=result['status']=='ok'
     return {
-        "status": status, "order_reference": _clean_text(payload.get("order_reference"), "Order reference", max_length=80),
-        "fixed_packages": fixed_packages, "fixed_package_count": len(fixed_packages), "packed_inside": packed_inside,
-        "loose_result": loose_result, "loose_item_count": len(loose_packages),
-        "total_shipping_packages": len(shipping_packages) if status == "ok" else None,
-        "shipping_summary": {
-            "complete": status == "ok", "package_count": len(shipping_packages), "packages": shipping_packages,
-            "all_weights_complete": bool(shipping_packages) and all(p.get("weight_complete") for p in shipping_packages),
-            "requires_scale_confirmation": any(p.get("package_type") == "warehouse_carton" or not p.get("weight_complete") for p in shipping_packages),
-        },
-        "message": "Packing plan created." if status == "ok" else "A partial packing plan was created; remaining loose items need review.",
-        "accessory_learning_enabled": True,
+        'status':result['status'], 'order_reference':_clean_text(payload.get('order_reference'),'Order reference',max_length=80),
+        'fixed_packages':fixed_packages, 'fixed_package_count':sum(p['package_type']=='factory_carton' for p in shipping_packages),
+        'packed_inside':packed_inside, 'loose_item_count':len(loose_rows),
+        'loose_result':layouts[0] if len(layouts)==1 else None, 'warehouse_results':layouts,
+        'planning_objective':'fewest_packages', 'search_complete':result['search_complete'],
+        'total_shipping_packages':len(shipping_packages) if complete else None,
+        'shipping_summary':{'complete':complete,'package_count':len(shipping_packages),'packages':shipping_packages,
+            'all_weights_complete':bool(shipping_packages) and all(p['weight_complete'] for p in shipping_packages),
+            'requires_scale_confirmation':any(p['package_type']=='warehouse_carton' or not p['weight_complete'] for p in shipping_packages)},
+        'message':result['message'], 'accessory_learning_enabled':True,
     }
