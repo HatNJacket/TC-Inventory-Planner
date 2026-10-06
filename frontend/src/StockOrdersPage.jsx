@@ -478,7 +478,12 @@ function StockOrderDetail({ orderId, onBack, onToast, prefill, onPrefillConsumed
     return v.toLowerCase() === 'no bin assigned' ? '' : v;
   };
   const handlePrintRfidLabels = async (requestedItems, which = 'all') => {
-    if (!requestedItems || !requestedItems.length) return;
+    if (!requestedItems || !requestedItems.length) {
+      // Never a silent no-op (2026-10-06, SO 969): the banner counted
+      // owed labels the per-line status couldn't place on a line.
+      onToast('No line on this order can take those labels right now - reload the page; if it persists, print them from the RFID app\'s receiving batch.', 'error');
+      return;
+    }
     // No bin, no label (2026-09-29): a label names where the box goes.
     // Binless lines are held back and flagged; the rest print as asked.
     const noBin = requestedItems.filter(i => !binOf(i.item_id));
