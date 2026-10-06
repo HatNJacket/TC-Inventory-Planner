@@ -1463,14 +1463,39 @@ def _rfid_sync_items(order_id: int, order: dict, item_ids=None) -> list:
     return out
 
 
+# One RFID sync per stock order at a time (2026-10-06, SO 969): Save's
+# background booking was still running when the user pressed Print all,
+# the two syncs overlapped, and the RFID app booked and printed the
+# whole order twice. The RFID app now serializes too; this keeps the
+# planner from even asking twice at once.
+_rfid_sync_locks: dict = {}
+
+
+def _rfid_sync_lock(order_id: int) -> asyncio.Lock:
+    lock = _rfid_sync_locks.get(order_id)
+    if lock is None:
+        lock = _rfid_sync_locks[order_id] = asyncio.Lock()
+    return lock
+
+
 async def _rfid_sync(order_id: int, order: dict, items: list, user: str,
                      print_labels: bool = False, print_skus=None,
                      timeout: float = 45,
                      allow_lower: bool = False) -> Optional[dict]:
     """POST the lines to the RFID app's /api/receiving/sync. Raises on a
-    refusal so callers decide how loud to be."""
+    refusal so callers decide how loud to be. Calls for the same order
+    run one after another, never side by side."""
     if not config.RFID_STATION_KEY or not items:
         return None
+    async with _rfid_sync_lock(order_id):
+        return await _rfid_sync_now(order_id, order, items, user,
+                                    print_labels, print_skus, timeout,
+                                    allow_lower)
+
+
+async def _rfid_sync_now(order_id: int, order: dict, items: list, user: str,
+                         print_labels: bool, print_skus, timeout: float,
+                         allow_lower: bool) -> Optional[dict]:
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
             f"{config.RFID_APP_URL.rstrip('/')}/api/receiving/sync",
@@ -1547,11 +1572,18 @@ async def rfid_labels_status(
     except Exception as e:
         logger.warning(f"RFID label status failed: {e}")
         return out
-    by_sku = {(s.get("sku") or "").strip().upper(): s
-              for s in data.get("skus") or []}
+    # The RFID app stores SKUs in a Latin-1 column, so a character it
+    # can't hold comes back as "?" ("ZWO FS-Ⅱ" -> "ZWO FS-?"). Compare
+    # both sides through the same fold until its schema is Unicode
+    # (2026-10-06, SO 969: the order owed 9 labels in total but no line
+    # matched, so the Print button had nothing to send and did nothing).
+    def fold(sku: str) -> str:
+        s = (sku or "").strip().upper()
+        return s.encode("cp1252", "replace").decode("cp1252")
+    by_sku = {fold(s.get("sku")): s for s in data.get("skus") or []}
     lines = {}
     for it in order.get("items") or []:
-        s = by_sku.get((it.get("sku") or "").strip().upper())
+        s = by_sku.get(fold(it.get("sku")))
         if s:
             lines[it["id"]] = {
                 "booked_units": s.get("booked_units", 0),
