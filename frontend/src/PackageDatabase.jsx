@@ -9,7 +9,7 @@ const card={background:'#fff',border:'1px solid var(--border)',borderRadius:12,p
 const blank=()=>({sku:'',product_name:'',part:'',dimensions_in:['','',''],weight_kg:'',verification_status:'Shopify — Unverified',shipping_behavior:'standard',packages_per_unit:1,source_parts_per_unit:1,notes:'',carrier_notes:''});
 const labels={all:'All records',verified:'Verified dimensions',unverified:'Unverified dimensions',missing_dimensions:'Missing / invalid dimensions',missing_weights:'Missing weights',needs_review:'Needs review',ready:'Ready package records'};
 
-export default function PackageDatabase({onToast,bundleVersion,onChanged}) {
+export default function PackageDatabase({onToast,bundleVersion,onChanged,focusRequest}) {
   const [data,setData]=useState(null),[query,setQuery]=useState(''),[filter,setFilter]=useState('all'),[offset,setOffset]=useState(0);
   const [edit,setEdit]=useState(blank),[unit,setUnit]=useState('cm'),[dims,setDims]=useState(['','','']);
   const [loading,setLoading]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
@@ -17,9 +17,23 @@ export default function PackageDatabase({onToast,bundleVersion,onChanged}) {
   const baseline=useRef(JSON.stringify(blank())),sequence=useRef(0);
   const dirty=JSON.stringify(edit)!==baseline.current;
   async function load(q=query,f=filter,start=offset){const id=++sequence.current;setLoading(true);
-    try{const result=await api.getShippingPackageDatabase(q,50,f,start);if(id===sequence.current){setData(result);setFilter(f);setOffset(start);}}
+    try{const result=await api.getShippingPackageDatabase(q,50,f,start);if(id===sequence.current){setData(result);setFilter(f);setOffset(start);return result;}}
     catch(e){setError(e.message);}finally{if(id===sequence.current)setLoading(false);}}
   useEffect(()=>{load();},[bundleVersion]);
+  useEffect(()=>{
+    if(!focusRequest?.sku)return;
+    if(dirty&&!window.confirm('Discard unsaved package changes and open this SKU?'))return;
+    let cancelled=false;
+    setQuery(focusRequest.sku);select(null,false);
+    (async()=>{
+      const result=await load(focusRequest.sku,'all',0);
+      if(cancelled||!result)return;
+      const exact=result.records.filter(r=>r.sku.trim().toLowerCase()===focusRequest.sku.trim().toLowerCase());
+      const match=exact.find(r=>r.id===focusRequest.registry_id)||exact.find(r=>focusRequest.part&&r.part===focusRequest.part)||(exact.length===1?exact[0]:null);
+      if(match)select(match,false);
+    })();
+    return()=>{cancelled=true;};
+  },[focusRequest]);
   function select(record,ask=true){if(ask&&dirty&&!window.confirm('Discard unsaved package changes?'))return;
     const next=record?{...record,dimensions_in:[...(record.dimensions_in||['','',''])]}:blank();
     setEdit(next);baseline.current=JSON.stringify(next);setDims(next.dimensions_in.map(v=>dimensionForInput(v,unit)));setChecked(false);setReason('');setError('');}

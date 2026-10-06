@@ -27,8 +27,10 @@ try {
  await page.getByText('#123',{exact:true}).waitFor();
  await page.getByRole('button',{name:'Build Packing Plan',exact:true}).click();
  await page.waitForFunction(()=>document.body.textContent.includes('Planning…'));
- await page.getByRole('button',{name:'Package Database',exact:true}).click();
- await page.getByRole('button',{name:'Edit package TEST',exact:true}).click();
+ await page.getByRole('button',{name:'Open package database for TEST',exact:true}).click();
+ await page.getByRole('heading',{name:'Edit package record',exact:true}).waitFor();
+ assert.equal(await page.getByLabel('Search package database').inputValue(),'TEST');
+ assert.equal(await page.getByLabel('Package sku',{exact:true}).inputValue(),'TEST');
  await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
  await page.getByText('Physical verification recorded',{exact:true}).count();
  await page.getByRole('button',{name:'Pack an Order',exact:true}).click();
@@ -46,6 +48,19 @@ try {
  assert.equal(await page.getByRole('button',{name:'Build Packing Plan',exact:true}).isDisabled(),true);
  fail=false;await page.getByRole('button',{name:'Load order',exact:true}).click();
  await page.getByText('Verified — Warehouse',{exact:true}).first().waitFor();
+ // Repeated clicks on the same SKU reopen its editor, but never discard drafts silently.
+ await page.getByRole('button',{name:'Open package database for TEST',exact:true}).click();
+ await page.getByRole('heading',{name:'Edit package record',exact:true}).waitFor();
+ await page.getByLabel('Package product_name').fill('Unsaved change');
+ await page.getByRole('button',{name:'Pack an Order',exact:true}).click();
+ page.once('dialog',d=>d.dismiss());
+ await page.getByRole('button',{name:'Open package database for TEST',exact:true}).click();
+ assert.equal(await page.getByLabel('Package product_name').inputValue(),'Unsaved change');
+ await page.getByRole('button',{name:'Pack an Order',exact:true}).click();
+ page.once('dialog',d=>d.accept());
+ await page.getByRole('button',{name:'Open package database for TEST',exact:true}).click();
+ await page.getByRole('heading',{name:'Edit package record',exact:true}).waitFor();
+ assert.equal(await page.getByLabel('Package product_name').inputValue(),'Test product');
  assert.deepEqual(errors,[]);
- console.log('PASS: order and input preserved after verification; package details refreshed; stale plan ignored; failed refresh blocks packing and can be retried.');
+ console.log('PASS: SKU link opens matching editor; repeated navigation protects drafts; order preserved after verification; stale plan ignored; failed refresh can be retried.');
 } finally {await browser.close();}
