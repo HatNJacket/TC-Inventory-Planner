@@ -39,8 +39,7 @@ export default function CustomShipmentBuilder({ onShipment, onChange, busy }) {
   async function load(e) {
     e.preventDefault(); setLoading(true); setError('');
     try {
-      const result = await api.loadCustomShippingShipment(items.map(({sku,quantity}) => ({sku,quantity:Number(quantity)})), reference.trim() || 'Custom shipment');
-      await onShipment(result);
+      await onShipment(items.map(({sku,quantity}) => ({sku,quantity:Number(quantity)})), reference.trim() || 'Custom shipment');
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }

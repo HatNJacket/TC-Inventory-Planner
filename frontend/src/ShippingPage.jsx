@@ -159,10 +159,12 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged, p
   const [plan,setPlan]=useState(null); const [planLoading,setPlanLoading]=useState(false); const [carrierData,setCarrierData]=useState({}); const [fitDraft,setFitDraft]=useState({}); const [notes,setNotes]=useState({}); const [detailsOpen,setDetailsOpen]=useState(false); const [finalWeights,setFinalWeights]=useState({}); const firstLookup=useRef(true);
   const destination=order?.shipping_address||{}; const readiness=order?.packing_readiness||{};
   const requestVersion=useRef(0),loadedReference=useRef(''),previousPackageVersion=useRef(packageVersion);
+  const loadedCustom=useRef(null);
   useEffect(()=>{
     if(previousPackageVersion.current===packageVersion)return;
     previousPackageVersion.current=packageVersion;
     if(!custom&&loadedReference.current)loadOrder(null,{value:loadedReference.current,refresh:true});
+    if(custom&&loadedCustom.current)loadCustomShipment(loadedCustom.current.items,loadedCustom.current.reference,true);
   },[packageVersion]);
   useEffect(()=>()=>{requestVersion.current+=1;},[]);
   const hostRows=useMemo(()=>rows.filter(r=>r.shipping_behavior==='accessory_carrier'),[rows]);
@@ -198,15 +200,22 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged, p
   }
 
   function clearCustomShipment() {
+    requestVersion.current+=1;loadedCustom.current=null;setLoading(false);setPlanLoading(false);
     setOrder(null);setRows([]);setPlan(null);setCarrierData({});setFitDraft({});setNotes({});setFinalWeights({});setError('');
   }
-  async function loadCustomShipment(result) {
-    clearCustomShipment();
-    setOrder(result);
-    const grouped=groupPhysicalPackages(result.physical_packages);
-    setRows(grouped);
-    await refreshCarrierData(grouped);
-    onToast?.('Custom shipment loaded');
+  async function loadCustomShipment(items,reference,refresh=false) {
+    const version=++requestVersion.current;
+    loadedCustom.current={items:items.map(item=>({...item})),reference};
+    setLoading(true);setPlanLoading(false);setError('');setPlan(null);setRows([]);setCarrierData({});setFitDraft({});setNotes({});setFinalWeights({});
+    if(!refresh)setOrder(null);
+    try {
+      const result=await api.loadCustomShippingShipment(items,reference);
+      if(version!==requestVersion.current)return;
+      setOrder(result);const grouped=groupPhysicalPackages(result.physical_packages);setRows(grouped);
+      await refreshCarrierData(grouped,version);
+      if(version===requestVersion.current)onToast?.(refresh?'Custom shipment package details refreshed. Build a new packing plan.':'Custom shipment loaded');
+    } catch(err){if(version===requestVersion.current)setError(`Could not ${refresh?'refresh':'load'} custom shipment. Your SKUs and quantities are preserved; click Load Custom Shipment to retry. ${err?.message||''}`);}
+    finally{if(version===requestVersion.current)setLoading(false);}
   }
 
   function planPayload(nextRows=rows) { return { order_reference:order?.name||orderNumber, items:nextRows.map(r=>({ sku:r.sku, product_name:r.product_name, part:r.part, registry_id:r.registry_id, registry_revision:r.registry_revision, dimensions_in:r.dimensions_in, verification_status:r.verification_status, weight_kg:r.weight_kg, shipping_behavior:r.shipping_behavior, quantity:r.quantity, packed_inside_count:r.packed_inside_count, packed_into:r.packed_into })) }; }
@@ -243,7 +252,7 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged, p
 
   const loose=plan?.loose_result; const packages=plan?.shipping_summary?.packages||[];
   return <div>
-    {custom ? <CustomShipmentBuilder onShipment={loadCustomShipment} onChange={clearCustomShipment} busy={planLoading}/> : <div style={{...card,padding:20,marginBottom:18}}><form onSubmit={loadOrder} style={{display:'flex',gap:10,alignItems:'end',flexWrap:'wrap'}}><div style={{flex:'1 1 320px'}}><label style={{display:'block',fontSize:12,fontWeight:800,marginBottom:6,color:'var(--text-light)'}}>Shopify order number</label><input value={orderNumber} onChange={e=>setOrderNumber(e.target.value)} placeholder="#51234 or 51234" style={inputStyle}/></div><button type="submit" disabled={loading||!orderNumber.trim()} style={{...primaryButton,minWidth:150,opacity: loading ? 0.7 : 1}}>{loading?(firstLookup.current?'Connecting to Shopify…':'Loading…'):'Load order'}</button></form>{error&&<div style={{marginTop:12,color:'#b91c1c',fontSize:13,fontWeight:700}}>{error}</div>}</div>}
+    {custom ? <CustomShipmentBuilder onShipment={loadCustomShipment} onChange={clearCustomShipment} busy={loading||planLoading}/> : <div style={{...card,padding:20,marginBottom:18}}><form onSubmit={loadOrder} style={{display:'flex',gap:10,alignItems:'end',flexWrap:'wrap'}}><div style={{flex:'1 1 320px'}}><label style={{display:'block',fontSize:12,fontWeight:800,marginBottom:6,color:'var(--text-light)'}}>Shopify order number</label><input value={orderNumber} onChange={e=>setOrderNumber(e.target.value)} placeholder="#51234 or 51234" style={inputStyle}/></div><button type="submit" disabled={loading||!orderNumber.trim()} style={{...primaryButton,minWidth:150,opacity: loading ? 0.7 : 1}}>{loading?(firstLookup.current?'Connecting to Shopify…':'Loading…'):'Load order'}</button></form>{error&&<div style={{marginTop:12,color:'#b91c1c',fontSize:13,fontWeight:700}}>{error}</div>}</div>}
     {custom&&error&&<p role="alert" style={{color:'#b91c1c'}}>{error}</p>}
     {!order&&<div style={{...card,padding:50,textAlign:'center',color:'var(--text-light)'}}><div style={{fontSize:44}}>📦</div><div style={{fontWeight:800,color:'var(--text)',marginTop:8}}>{custom?'Plan a custom shipment':'Pack a Shopify order'}</div><div style={{fontSize:13,marginTop:6}}>{custom?'Add SKUs and quantities above, then load the shipment to calculate its packing plan.':'Load the order once, then all packing-plan rebuilds happen locally against the loaded package state.'}</div></div>}
     {order&&<>
@@ -320,7 +329,7 @@ export default function ShippingPage({ onToast, entrySignal }) {
       </div>
       <div style={{display:'flex',gap:7,flexWrap:'wrap',marginBottom:18}}>{tabs.map(([id,label])=><button key={id} onClick={()=>selectView(id)} style={{border:'1px solid',borderColor:view===id?GREEN:'var(--border)',borderRadius:999,padding:'8px 13px',background:view===id?'#eefbf3':'#fff',color:view===id?'#16723b':'var(--text)',fontWeight:800,cursor:'pointer'}}>{label}</button>)}</div>
       <div hidden={view!=='packing'}><PackingView onOpenPackage={openPackage} packageVersion={bundleVersion} onPackageChanged={()=>setBundleVersion(v=>v+1)} onToast={onToast} currentUser={user?.name}/></div>
-      {visited.has('custom')&&<div hidden={view!=='custom'}><PackingView onOpenPackage={openPackage} key={bundleVersion} onPackageChanged={()=>setBundleVersion(v=>v+1)} custom onToast={onToast} currentUser={user?.name}/></div>}
+      {visited.has('custom')&&<div hidden={view!=='custom'}><PackingView onOpenPackage={openPackage} packageVersion={bundleVersion} onPackageChanged={()=>setBundleVersion(v=>v+1)} custom onToast={onToast} currentUser={user?.name}/></div>}
       {visited.has('registry')&&<div hidden={view!=='registry'}><PackageDatabaseView focusRequest={packageFocus} bundleVersion={bundleVersion} onChanged={()=>setBundleVersion(v=>v+1)} onToast={onToast} currentUser={user?.name}/></div>}
       {visited.has('bundles')&&<div hidden={view!=='bundles'}><BundleManager onChanged={()=>setBundleVersion(v=>v+1)}/></div>}
       {visited.has('catalog')&&<div hidden={view!=='catalog'}><CartonCatalogView onToast={onToast} active={view==='catalog'&&!!user}/></div>}
