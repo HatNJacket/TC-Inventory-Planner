@@ -1877,7 +1877,8 @@ class ShopifyClient:
                             phone
                         }
                         shippingLines(first: 10) {
-                            edges { node { title code source } }
+                            edges { node { title code source deliveryCategory isRemoved } }
+                            pageInfo { hasNextPage }
                         }
                         lineItems(first: 250) {
                             edges {
@@ -1915,6 +1916,25 @@ class ShopifyClient:
         if order is None:
             return None
 
+        # Separate query: a missing fulfillment scope must not hide the order itself.
+        from .shipping_delivery import classify_delivery
+        fulfillment_orders = None
+        try:
+            delivery_data = await self._query('''
+                query shippingDelivery($id: ID!) {
+                    order(id: $id) {
+                        fulfillmentOrders(first: 100) {
+                            edges { node { status deliveryMethod { methodType } } }
+                            pageInfo { hasNextPage }
+                        }
+                    }
+                }
+            ''', {'id': order['id']})
+            fulfillment_orders = (delivery_data.get('order') or {}).get('fulfillmentOrders')
+        except Exception:
+            logger.warning('Shipping Planner delivery-method lookup unavailable; using explicit order delivery labels where possible.')
+        delivery = classify_delivery(order, fulfillment_orders)
+
         line_items = []
         for edge in ((order.get("lineItems") or {}).get("edges") or []):
             li = edge.get("node") or {}
@@ -1942,6 +1962,7 @@ class ShopifyClient:
         shipping_lines = [
             (edge.get("node") or {})
             for edge in ((order.get("shippingLines") or {}).get("edges") or [])
+            if not (edge.get("node") or {}).get("isRemoved")
         ]
         return {
             "id": order.get("id"),
@@ -1964,6 +1985,7 @@ class ShopifyClient:
                 "phone": address.get("phone") or "",
             },
             "shipping_method": shipping_lines[0].get("title") if shipping_lines else "",
+            "delivery": delivery,
             "shipping_lines": shipping_lines,
             "line_items": line_items,
             "warnings": (["Order has more than 250 line items; Phase 1 only loaded the first 250."]

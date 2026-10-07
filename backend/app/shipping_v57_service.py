@@ -514,6 +514,8 @@ def packing_combination_summary(host_registry_id: str, raw_accessories: object) 
 
 
 def plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    from .shipping_delivery import ensure_packing_allowed
+    ensure_packing_allowed(payload)
     current={r.get('id'):r for r in load_registry()}
     for item in payload.get('items',[]) if isinstance(payload.get('items'),list) else []:
         if not isinstance(item,dict): continue

@@ -104,6 +104,11 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
     Shopify order and the existing packing engine.
     """
     from .shipping_package_health import revision, REVIEW
+    if (order.get('delivery') or {}).get('packing_allowed') is False:
+        return {**order, 'physical_packages': [], 'bundle_expansions': [],
+                'packing_readiness': {'physical_package_count': 0, 'unresolved_count': 0,
+                                     'unresolved': [], 'provisional_skus': [], 'verified_skus': [],
+                                     'ready_for_verified_packing': False}}
     physical_packages: List[Dict[str, Any]] = []
     enriched_items: List[Dict[str, Any]] = []
     unresolved: List[Dict[str, Any]] = []

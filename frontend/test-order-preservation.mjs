@@ -16,6 +16,8 @@ try {
   const path=new URL(r.request().url()).pathname;
   const reply=(body,status=200)=>r.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
   if(path.endsWith('/users'))return reply({users:[{id:'test',name:'Tester',initials:'T'}]});
+  if(path.endsWith('/orders/50987'))return reply({name:'#50987',shipping_method:'Local pickup',delivery:{type:'pickup',packing_allowed:false,message:'Pickup order — packing not needed. No shipping carton or label is required.'},physical_packages:[],packing_readiness:{physical_package_count:0,unresolved_count:0}});
+  if(path.endsWith('/orders/UNKNOWN'))return reply({name:'#UNKNOWN',delivery:{type:'unknown',packing_allowed:false,message:'Delivery type could not be confirmed. Check Shopify.'},physical_packages:[]});
   if(path.includes('/orders/')){loads++;if(fail)return reply({detail:'Test refresh unavailable'},500);return reply({name:'#123',physical_packages:[{...record(),registry_id:'r1',registry_revision:record()._revision,quantity:1}],packing_readiness:{physical_package_count:1,unresolved_count:0,unresolved:[],provisional_skus:verified?[]:['TEST']}});}
   if(path.endsWith('/review')){verified=true;return reply({record:record()});}
   if(path.endsWith('/package-database'))return reply({records:[record()],count:1,bundles:[],health:{registry_records:1,total:1,verified:verified?1:0,unverified:verified?0:1,missing_dimensions:0,missing_weights:0,needs_review:0,ready:verified?1:0,bundles:0,ready_bundles:0}});
@@ -62,6 +64,17 @@ try {
  await page.getByRole('heading',{name:'Edit package record',exact:true}).waitFor();
  await page.waitForFunction(()=>document.querySelector('[aria-label="Package product_name"]')?.value==='Test product');
  assert.equal(await page.getByLabel('Package product_name').inputValue(),'Test product');
+ await page.getByRole('button',{name:'Pack an Order',exact:true}).click();
+ await input.fill('50987');await page.getByRole('button',{name:'Load order',exact:true}).click();
+ await page.getByRole('heading',{name:'#50987 · Pickup order',exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'Build Packing Plan',exact:true}).count(),0);
+ assert.equal(await page.getByText('Physical packages',{exact:true}).count(),0);
+ await input.fill('UNKNOWN');await page.getByRole('button',{name:'Load order',exact:true}).click();
+ await page.getByRole('heading',{name:'#UNKNOWN · Delivery review needed',exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'Build Packing Plan',exact:true}).count(),0);
+ await input.fill('123');await page.getByRole('button',{name:'Load order',exact:true}).click();
+ await page.getByText('#123',{exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'Build Packing Plan',exact:true}).isEnabled(),true);
  assert.deepEqual(errors,[]);
  console.log('PASS: SKU link opens matching editor; repeated navigation protects drafts; order preserved after verification; stale plan ignored; failed refresh can be retried.');
 } finally {await browser.close();}
