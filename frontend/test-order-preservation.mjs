@@ -60,6 +60,7 @@ try {
  page.once('dialog',d=>d.accept());
  await page.getByRole('button',{name:'Open package database for TEST',exact:true}).click();
  await page.getByRole('heading',{name:'Edit package record',exact:true}).waitFor();
+ await page.waitForFunction(()=>document.querySelector('[aria-label="Package product_name"]')?.value==='Test product');
  assert.equal(await page.getByLabel('Package product_name').inputValue(),'Test product');
  assert.deepEqual(errors,[]);
  console.log('PASS: SKU link opens matching editor; repeated navigation protects drafts; order preserved after verification; stale plan ignored; failed refresh can be retried.');
