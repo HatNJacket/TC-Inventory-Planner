@@ -38,21 +38,25 @@ def dimensions_valid(record):
 
 
 def categories(record):
+    if record.get('shipping_behavior') == 'digital':
+        return dict.fromkeys(('verified','unverified','missing_dimensions','missing_weights','needs_review','ready'), False) | {'digital': True}
     valid=dimensions_valid(record)
     review=bool(record.get('needs_review')) or record.get('verification_status')==REVIEW
     verified=valid and not review and record.get('verification_status') in VERIFIED_STATUSES
     return {'verified':verified, 'unverified':valid and not verified and not review,
             'missing_dimensions':not valid, 'missing_weights':not positive(record.get('weight_kg')),
-            'needs_review':review, 'ready':verified and positive(record.get('weight_kg'))}
+            'needs_review':review, 'ready':verified and positive(record.get('weight_kg')), 'digital':False}
 
 
 def health(records, bundles):
     from .shipping_bundles import sku_key
-    physical=[r for r in records if sku_key(r.get('sku')) not in bundles]
+    components=[r for r in records if sku_key(r.get('sku')) not in bundles]
+    physical=[r for r in components if r.get('shipping_behavior') != 'digital']
     counts={k:sum(categories(r)[k] for r in physical) for k in categories({})}
     by_sku={}
-    for r in physical: by_sku.setdefault(sku_key(r.get('sku')),[]).append(r)
-    ready_bundles=sum(all(by_sku.get(sku_key(c['sku'])) and all(categories(r)['ready'] for r in by_sku[sku_key(c['sku'])])
+    counts['digital']=sum(categories(r)['digital'] for r in components)
+    for r in components: by_sku.setdefault(sku_key(r.get('sku')),[]).append(r)
+    ready_bundles=sum(all(by_sku.get(sku_key(c['sku'])) and all(categories(r)['ready'] or categories(r)['digital'] for r in by_sku[sku_key(c['sku'])])
                           for c in b['components']) for b in bundles.values())
     return {**counts,'total':len(physical),'registry_records':len(records),
             'verified_percent':round(100*counts['verified']/len(physical),1) if physical else 0,
@@ -61,6 +65,8 @@ def health(records, bundles):
 
 
 def suspicious(clean, existing):
+    if clean.get('shipping_behavior') == 'digital':
+        return []
     warnings=[]
     dims=clean.get('dimensions_in') or []
     if dimensions_valid(clean) and (min(dims)<0.1 or max(dims)>100):

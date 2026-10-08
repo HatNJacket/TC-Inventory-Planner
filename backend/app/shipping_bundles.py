@@ -125,6 +125,8 @@ def component_warnings(bundle):
         if not rows:
             warnings.append(f'{sku}: not in Package Database; add its package data before planning.')
         for row in rows:
+            if row.get('shipping_behavior') == 'digital':
+                continue
             def positive(value):
                 try:
                     return math.isfinite(float(value)) and float(value) > 0

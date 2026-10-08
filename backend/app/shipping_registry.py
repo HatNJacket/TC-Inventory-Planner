@@ -183,6 +183,11 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
             enriched_items.append(item)
             continue
 
+        rows = [row for row in rows if row.get('shipping_behavior') != 'digital']
+        if not rows:
+            item['registry_state'] = 'digital'
+            enriched_items.append(item)
+            continue
         statuses = {str(row.get("verification_status") or "") for row in rows}
         for row in rows:
             if row.get('needs_review') or row.get('verification_status') == REVIEW:

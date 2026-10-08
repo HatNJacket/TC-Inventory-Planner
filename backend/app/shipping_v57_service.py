@@ -23,7 +23,7 @@ REGISTRY_PATH = DATA_DIR / "shipping_package_registry.json"
 PACKING_HISTORY_PATH = DATA_DIR / "shipping_packing_history.json"
 
 ALLOWED_VERIFICATION_STATUSES = VERIFIED_STATUSES | {PROVISIONAL_STATUS, package_health.REVIEW}
-SHIPPING_BEHAVIORS = {"standard", "carrier_ready", "accessory_carrier", "must_ship_alone"}
+SHIPPING_BEHAVIORS = {"standard", "carrier_ready", "accessory_carrier", "must_ship_alone", "digital"}
 ACCESSORY_AUTO_REJECT_FAILURES = 3
 COMBINATION_STRONG_CONFIRM_SUCCESSES = 3
 
@@ -139,7 +139,7 @@ def normalize_registry_record(raw: dict[str, Any], *, existing_id: str | None = 
     if status not in ALLOWED_VERIFICATION_STATUSES:
         raise ValueError("Unsupported verification status")
     dims = _valid_dimensions_list(raw.get("dimensions_in"))
-    if not dims:
+    if not dims and raw.get('shipping_behavior') != 'digital':
         raise ValueError("dimensions_in must be three positive numbers")
     behavior = _clean_text(raw.get("shipping_behavior") or "standard", "Shipping behavior", required=True, max_length=40)
     if behavior not in SHIPPING_BEHAVIORS:
@@ -206,6 +206,8 @@ def review_registry_record(record_id, payload, user):
         if not reason: raise ValueError('Enter why the package data needs review.')
         clean.update(needs_review=True,review_reason=reason,verification_status=package_health.REVIEW)
     elif action=='verify':
+        if old.get('shipping_behavior') == 'digital':
+            raise ValueError('Digital products do not need physical verification.')
         if payload.get('physically_checked') is not True:
             raise ValueError('Confirm you physically checked the packaged dimensions and weight.')
         if not package_health.dimensions_valid(old) or not package_health.positive(old.get('weight_kg')):
@@ -520,6 +522,8 @@ def plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
     for item in payload.get('items',[]) if isinstance(payload.get('items'),list) else []:
         if not isinstance(item,dict): continue
         record=current.get(item.get('registry_id'))
+        if record and record.get('shipping_behavior') == 'digital':
+            raise ValueError(f"{record['sku']}: digital products do not need packing. Reload the shipment.")
         if record and (record.get('needs_review') or record.get('verification_status')==package_health.REVIEW):
             raise ValueError(f"{record['sku']}: package data needs review. Reload the order after correcting it.")
         if record and item.get('registry_revision') and item['registry_revision']!=package_health.revision(record):
@@ -535,6 +539,8 @@ def plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
     for raw in raw_items:
         if not isinstance(raw, dict):
             raise ValueError("Packing item must be an object")
+        if raw.get('shipping_behavior') == 'digital':
+            raise ValueError('Digital products do not need packing. Reload the shipment without digital package rows.')
         dims = _valid_dimensions_list(raw.get("dimensions_in"))
         if not dims:
             raise ValueError(f"{raw.get('sku') or 'Package'} needs three positive dimensions")

@@ -56,6 +56,67 @@ class PackageHealthTests(unittest.TestCase):
         self.assertEqual(len(self.client.get('/api/shipping/package-database?offset=50').json()['records']),16)
         self.assertEqual(self.client.get('/api/shipping/package-database?health_filter=bad').status_code,422)
 
+    def test_digital_save_health_filter_and_no_verification(self):
+        record=self.get('C')
+        record.update(shipping_behavior='digital',dimensions_in=None,weight_kg=None)
+        response=self.save(record)
+        self.assertEqual(response.status_code,200,response.text)
+        saved=response.json()['record']
+        self.assertIsNone(saved['dimensions_in'])
+        data=self.client.get('/api/shipping/package-database?health_filter=digital').json()
+        self.assertEqual([r['sku'] for r in data['records']],['C'])
+        self.assertEqual(data['health']['digital'],1)
+        self.assertEqual(data['health']['total'],64)
+        self.assertEqual(data['health']['registry_records'],66)
+        self.assertEqual(data['health']['missing_dimensions'],0)
+        self.assertEqual(data['health']['missing_weights'],1)
+        self.assertEqual(data['health']['verified_percent'],round(62/64*100,1))
+        self.assertEqual(self.review(saved).status_code,400)
+        saved['shipping_behavior']='standard'
+        self.assertEqual(self.save(saved).status_code,400)
+        saved.update(dimensions_in=[4,3,2],weight_kg=1)
+        physical=self.save(saved).json()['record']
+        self.assertEqual(physical['verification_status'],'Shopify — Unverified')
+        self.assertEqual(svc.registry_payload()['health']['digital'],0)
+
+    def test_digital_retains_measurements_and_history_but_blocks_stale_plans(self):
+        record=self.get('A');record['shipping_behavior']='digital'
+        saved=self.save(record).json()['record']
+        self.assertEqual(saved['dimensions_in'],[4,3,2])
+        self.assertEqual(saved['weight_kg'],1)
+        self.assertEqual(saved['change_history'][-1]['before']['shipping_behavior'],'standard')
+        with self.assertRaisesRegex(ValueError,'digital products'):
+            svc.plan_payload({'items':[{'registry_id':'A','dimensions_in':[4,3,2]}]})
+        with self.assertRaisesRegex(ValueError,'Digital products'):
+            svc.plan_payload({'items':[{'shipping_behavior':'digital'}]})
+
+    def test_digital_expansion_mixed_orders_and_bundles(self):
+        record=self.get('A');record.update(shipping_behavior='digital',dimensions_in=None,weight_kg=None)
+        self.assertEqual(self.save(record).status_code,200)
+        expanded=registry.expand_order({'line_items':[{'sku':'A','quantity':2},{'sku':'D','quantity':1}]})
+        self.assertEqual([p['sku'] for p in expanded['physical_packages']],['D'])
+        self.assertEqual(expanded['line_items'][0]['registry_state'],'digital')
+        self.assertEqual(expanded['packing_readiness']['unresolved_count'],0)
+        self.assertEqual(expanded['packing_readiness']['provisional_skus'],['D'])
+        bundled=registry.expand_order({'line_items':[{'sku':'BUNDLE','quantity':1}]})
+        self.assertEqual(bundled['physical_packages'],[])
+        self.assertEqual(bundled['packing_readiness']['unresolved_count'],0)
+        self.assertEqual(svc.registry_payload()['health']['ready_bundles'],1)
+        self.assertEqual(bundles.component_warnings(bundles.load_bundles()['bundle']),[])
+        from app.shipping_custom import custom_shipment
+        custom=custom_shipment({'items':[{'sku':'A','quantity':1}]})
+        self.assertEqual(custom['physical_packages'],[])
+        self.assertEqual(custom['packing_readiness']['unresolved_count'],0)
+
+    def test_digital_part_does_not_hide_physical_part_of_same_sku(self):
+        records=svc.load_registry()
+        records.append(self.record('A',id='A-license',part='License',shipping_behavior='digital',dimensions_in=None,weight_kg=None))
+        svc._write_registry(records)
+        expanded=registry.expand_order({'line_items':[{'sku':'A','quantity':1}]})
+        self.assertEqual(len(expanded['physical_packages']),1)
+        self.assertEqual(expanded['packing_readiness']['unresolved_count'],0)
+        self.assertEqual(health.health([records[-1]],{})['missing_weights'],0)
+
     def test_save_is_not_verification_and_dimensions_change_resets(self):
         new=self.record('NEW');new.pop('id')
         response=self.save(new);self.assertEqual(response.status_code,200)
