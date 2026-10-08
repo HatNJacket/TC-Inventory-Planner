@@ -183,6 +183,17 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
             enriched_items.append(item)
             continue
 
+        from .shipping_aliases import resolve, link_revision
+        try:
+            rows, packaging_link = resolve(sku, _load_payload()['records'], bundles)
+        except ValueError as exc:
+            item['registry_state'] = 'review'
+            unresolved.append({'sku':sku, 'reason':str(exc)})
+            enriched_items.append(item)
+            continue
+        if packaging_link and packaging_link.get('needs_review'):
+            unresolved.append({'sku':sku, 'reason':'Packaging link needs review. Correct the link or use separate measurements.'})
+        packaging_revision = link_revision(packaging_link, rows) if packaging_link else None
         rows = [row for row in rows if row.get('shipping_behavior') != 'digital']
         if not rows:
             item['registry_state'] = 'digital'
@@ -231,6 +242,8 @@ def expand_order(order: Dict[str, Any]) -> Dict[str, Any]:
                         "carrier_notes": row.get("carrier_notes") or "",
                         "registry_id": row.get("id"),
                         "registry_revision": revision(row),
+                        "packaging_source_sku": packaging_link['packaging_source_sku'] if packaging_link else None,
+                        "packaging_link_revision": packaging_revision,
                     })
 
         enriched_items.append(item)

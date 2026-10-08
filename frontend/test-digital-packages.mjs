@@ -17,7 +17,8 @@ try{
    saved={...r.request().postDataJSON().record,id:'digital-test',_revision:'v1',dimensions_in:null,weight_kg:null};
    return reply({record:saved});
   }
-  return reply({records:saved?[saved]:[],count:saved?1:0,bundles:[],health:{total:0,registry_records:saved?1:0,digital:saved?1:0,verified:0,unverified:0,missing_dimensions:0,missing_weights:0,needs_review:0,ready:0,verified_percent:0,ready_percent:0,bundles:0,ready_bundles:0}});
+  if(new URL(r.request().url()).searchParams.get('q')==='ORIGINAL')return reply({records:[{sku:'ORIGINAL',product_name:'Original physical product'}],count:1});
+  return reply({records:saved?[saved]:[],count:saved?1:0,bundles:[],health:{total:0,registry_records:saved?1:0,digital:saved?1:0,linked:saved?.packaging_source_sku?1:0,verified:0,unverified:0,missing_dimensions:0,missing_weights:0,needs_review:0,ready:0,verified_percent:0,ready_percent:0,bundles:0,ready_bundles:0}});
  });
  await page.goto('http://127.0.0.1:3011/');
  await page.getByLabel('Package sku',{exact:true}).fill('DIGITAL-LICENSE');
@@ -33,6 +34,21 @@ try{
  await page.getByLabel('Shipping behavior').selectOption('standard');
  assert.equal(await page.getByLabel('Package length',{exact:true}).inputValue(),'');
  assert.equal(await page.getByRole('button',{name:'Mark physically verified',exact:true}).isDisabled(),true);
+ // Convert an existing listing to linked packaging without entering measurements.
+ await page.getByLabel('Packaging data',{exact:true}).selectOption('linked');
+ await page.getByLabel('Search original product').fill('ORIGINAL');
+ await page.getByRole('button',{name:'Search packaging sources',exact:true}).click();
+ await page.getByRole('button',{name:'Use ORIGINAL',exact:true}).click();
+ await page.getByRole('button',{name:'Save Package',exact:true}).click();
+ await page.getByText('Select an original SKU and confirm identical packaging before saving.',{exact:true}).waitFor();
+ await page.getByLabel('I confirm this listing has the same physical packaging and contents as the original product.').check();
+ await page.getByRole('button',{name:'Save Package',exact:true}).click();
+ await page.getByText('Uses ORIGINAL',{exact:true}).waitFor();
+ assert.equal(saved.packaging_source_sku,'ORIGINAL');
+ assert.equal(saved.packaging_confirmed,true);
+ assert.equal(await page.getByRole('button',{name:'Mark physically verified',exact:true}).count(),0);
+ await page.getByLabel('Packaging data',{exact:true}).selectOption('own');
+ assert.equal(await page.getByLabel('Package length',{exact:true}).inputValue(),'');
  assert.deepEqual(errors,[]);
- console.log('PASS: digital save, health filter, measurement-free editor, and return to physical verification.');
+ console.log('PASS: digital editor; original SKU search, packaging confirmation, link conversion, and return to separate measurements.');
 }finally{await browser.close();}

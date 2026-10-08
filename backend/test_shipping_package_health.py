@@ -56,6 +56,91 @@ class PackageHealthTests(unittest.TestCase):
         self.assertEqual(len(self.client.get('/api/shipping/package-database?offset=50').json()['records']),16)
         self.assertEqual(self.client.get('/api/shipping/package-database?health_filter=bad').status_code,422)
 
+    def make_link(self, sku='OPENBOX', source='A'):
+        raw=self.record(sku,dimensions_in=None,weight_kg=None,packaging_source_sku=source,packaging_confirmed=True)
+        raw.pop('id')
+        response=self.save(raw)
+        self.assertEqual(response.status_code,200,response.text)
+        return response.json()['record']
+
+    def test_link_health_identity_and_live_source_updates(self):
+        link=self.make_link()
+        data=self.client.get('/api/shipping/package-database?health_filter=linked').json()
+        self.assertEqual([r['sku'] for r in data['records']],['OPENBOX'])
+        self.assertEqual(data['health']['total'],65)
+        self.assertEqual(data['health']['linked'],1)
+        self.assertEqual(data['health']['missing_dimensions'],1)
+        expanded=registry.expand_order({'line_items':[{'sku':'OPENBOX','quantity':2},{'sku':'A','quantity':1}]})
+        packages=expanded['physical_packages']
+        self.assertEqual([p['sku'] for p in packages],['OPENBOX','OPENBOX','A'])
+        self.assertEqual(packages[0]['registry_id'],'A')
+        self.assertEqual(packages[0]['dimensions_in'],[4,3,2])
+        with patch('app.shipping_consolidation.plan_shipments',return_value={'packages':[],'layouts':[],'status':'ok','search_complete':True,'message':''}) as planner:
+            svc.plan_payload({'items':[{**packages[0],'quantity':1}]})
+            self.assertEqual(planner.call_args.args[0][0]['sku'],'OPENBOX')
+        source=self.get('A');source['dimensions_in']=[4.1,3,2]
+        self.assertEqual(self.save(source).status_code,200)
+        fresh=registry.expand_order({'line_items':[{'sku':'OPENBOX','quantity':1}]})
+        self.assertEqual(fresh['physical_packages'][0]['dimensions_in'],[4.1,3,2])
+        with self.assertRaisesRegex(ValueError,'link changed'):
+            svc.plan_payload({'items':[packages[0]]})
+        self.assertEqual(self.review(link).status_code,400)
+
+    def test_link_validation_and_source_protection(self):
+        link=self.make_link()
+        for source in ['OPENBOX','MISSING','BUNDLE']:
+            raw={**link,'packaging_source_sku':source,'packaging_confirmed':True}
+            self.assertEqual(self.save(raw).status_code,400)
+        self.assertEqual(self.save({**link,'packaging_confirmed':False}).status_code,400)
+        source=self.get('A');source['shipping_behavior']='digital'
+        self.assertEqual(self.save(source).status_code,400)
+        source=self.get('A');source['sku']='RENAMED'
+        self.assertEqual(self.save(source).status_code,400)
+        with self.assertRaises(ValueError): svc.delete_registry_record('A')
+        raw=self.record('OTHER',packaging_source_sku='OPENBOX',packaging_confirmed=True);raw.pop('id')
+        self.assertEqual(self.save(raw).status_code,400)
+
+    def test_link_multiple_parts_and_new_part_invalidates_plan(self):
+        link=self.make_link()
+        old=registry.expand_order({'line_items':[{'sku':'OPENBOX','quantity':1}]})['physical_packages'][0]
+        records=svc.load_registry()
+        records.append(self.record('A',id='A-second',part='Tripod',packages_per_unit=2))
+        svc._write_registry(records)
+        fresh=registry.expand_order({'line_items':[{'sku':'OPENBOX','quantity':2}]})
+        self.assertEqual(len(fresh['physical_packages']),6)
+        self.assertTrue(all(p['sku']=='OPENBOX' for p in fresh['physical_packages']))
+        with self.assertRaisesRegex(ValueError,'link changed'):svc.plan_payload({'items':[old]})
+
+    def test_convert_existing_record_and_unlink(self):
+        record=self.get('C');record.update(packaging_source_sku='A',packaging_confirmed=True)
+        saved=self.save(record).json()['record']
+        self.assertEqual(saved['change_history'][-1]['before']['dimensions_in'],[0,2,3])
+        saved.update(packaging_source_sku='',dimensions_in=[4,3,2])
+        result=self.save(saved)
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertEqual(result.json()['record']['verification_status'],'Shopify — Unverified')
+        self.assertEqual(svc.registry_payload()['health']['linked'],0)
+
+    def test_linked_bundle_component_and_missing_source_fail_closed(self):
+        self.make_link()
+        bundle={'sku':'KIT','components':[{'sku':'OPENBOX','quantity':1}]}
+        self.assertEqual(bundles.component_warnings(bundle),[])
+        svc._write_registry([r for r in svc.load_registry() if r['id']!='A'])
+        expanded=registry.expand_order({'line_items':[{'sku':'OPENBOX','quantity':1}]})
+        self.assertEqual(expanded['physical_packages'],[])
+        self.assertEqual(expanded['packing_readiness']['unresolved_count'],1)
+
+    def test_source_review_and_unlink_invalidate_loaded_alias(self):
+        link=self.make_link()
+        package=registry.expand_order({'line_items':[{'sku':'OPENBOX','quantity':1}]})['physical_packages'][0]
+        self.review(self.get('A'),action='flag',reason='Packaging changed')
+        expanded=registry.expand_order({'line_items':[{'sku':'OPENBOX','quantity':1}]})
+        self.assertGreater(expanded['packing_readiness']['unresolved_count'],0)
+        with self.assertRaises(ValueError):svc.plan_payload({'items':[package]})
+        link.update(packaging_source_sku='',dimensions_in=[4,3,2],weight_kg=1)
+        self.assertEqual(self.save(link).status_code,200)
+        with self.assertRaisesRegex(ValueError,'link removed'):svc.plan_payload({'items':[package]})
+
     def test_digital_save_health_filter_and_no_verification(self):
         record=self.get('C')
         record.update(shipping_behavior='digital',dimensions_in=None,weight_kg=None)

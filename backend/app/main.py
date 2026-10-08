@@ -6592,7 +6592,7 @@ async def shipping_v57_packing_plan(
 def shipping_package_database(
     q: str = Query(""),
     limit: int = Query(50, ge=1, le=50),
-    health_filter: str = Query('all', pattern='^(all|verified|unverified|missing_dimensions|missing_weights|needs_review|ready|digital)$'),
+    health_filter: str = Query('all', pattern='^(all|verified|unverified|missing_dimensions|missing_weights|needs_review|ready|digital|linked)$'),
     offset: int = Query(0, ge=0),
     token: str = Depends(verify_token),
 ):

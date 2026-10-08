@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import shipping_registry
+from .shipping_bundles import load_bundles
 from .shipping_registry import PROVISIONAL_STATUS, VERIFIED_STATUSES
 from . import shipping_package_health as package_health
 
@@ -139,7 +140,7 @@ def normalize_registry_record(raw: dict[str, Any], *, existing_id: str | None = 
     if status not in ALLOWED_VERIFICATION_STATUSES:
         raise ValueError("Unsupported verification status")
     dims = _valid_dimensions_list(raw.get("dimensions_in"))
-    if not dims and raw.get('shipping_behavior') != 'digital':
+    if not dims and raw.get('shipping_behavior') != 'digital' and not raw.get('packaging_source_sku'):
         raise ValueError("dimensions_in must be three positive numbers")
     behavior = _clean_text(raw.get("shipping_behavior") or "standard", "Shipping behavior", required=True, max_length=40)
     if behavior not in SHIPPING_BEHAVIORS:
@@ -151,6 +152,7 @@ def normalize_registry_record(raw: dict[str, Any], *, existing_id: str | None = 
     return {
         "id": existing_id or str(raw.get("id") or uuid.uuid4()),
         "sku": sku,
+        "packaging_source_sku": _clean_text(raw.get('packaging_source_sku'), 'Packaging source SKU', max_length=100),
         "product_name": product_name,
         "part": part,
         "dimensions_in": dims,
@@ -176,6 +178,11 @@ def save_registry_record(raw: dict[str, Any], *, measured_by_default: str = "") 
     clean = normalize_registry_record(raw, existing_id=record_id or None, measured_by_default=measured_by_default)
     if record_id and existing_index is None:
         raise ValueError('Package record no longer exists. Reload the database.')
+    if clean['packaging_source_sku']:
+        if raw.get('packaging_confirmed') is not True:
+            raise ValueError('Confirm the listing has the same physical packaging as the original product.')
+        if clean['shipping_behavior'] == 'digital':
+            raise ValueError('Digital products cannot use a physical packaging link.')
     clean = package_health.prepare_save(raw, clean, records[existing_index] if existing_index is not None else None, measured_by_default)
     same_sku = [r for r in records if str(r.get("sku", "")).strip().lower() == clean["sku"].lower() and r.get("id") != clean["id"]]
     if same_sku:
@@ -187,6 +194,8 @@ def save_registry_record(raw: dict[str, Any], *, measured_by_default: str = "") 
         records.append(clean)
     else:
         records[existing_index] = clean
+    from .shipping_aliases import validate
+    validate(records, load_bundles())
     _write_registry(records)
     return {"status": "ok", "record": {**clean,'_revision':package_health.revision(clean)}}
 
@@ -206,6 +215,8 @@ def review_registry_record(record_id, payload, user):
         if not reason: raise ValueError('Enter why the package data needs review.')
         clean.update(needs_review=True,review_reason=reason,verification_status=package_health.REVIEW)
     elif action=='verify':
+        if old.get('packaging_source_sku'):
+            raise ValueError('Verify measurements on the original packaging source SKU instead.')
         if old.get('shipping_behavior') == 'digital':
             raise ValueError('Digital products do not need physical verification.')
         if payload.get('physically_checked') is not True:
@@ -229,6 +240,8 @@ def delete_registry_record(record_id: str) -> dict[str, Any]:
     kept = [r for r in records if str(r.get("id")) != record_id]
     if len(kept) == len(records):
         raise ValueError("Package record was not found")
+    from .shipping_aliases import validate
+    validate(kept, load_bundles())
     _write_registry(kept)
     return {"status": "ok", "deleted": record_id}
 
@@ -522,6 +535,15 @@ def plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
     for item in payload.get('items',[]) if isinstance(payload.get('items'),list) else []:
         if not isinstance(item,dict): continue
         record=current.get(item.get('registry_id'))
+        from .shipping_aliases import resolve, link_revision
+        targets, link = resolve(item.get('sku',''), list(current.values()), load_bundles())
+        if link:
+            if item.get('packaging_link_revision') != link_revision(link, targets) or not record or record not in targets:
+                raise ValueError('Packaging link changed. Reload the shipment before planning.')
+            if link.get('needs_review'):
+                raise ValueError('Packaging link needs review. Use separate measurements or correct the link.')
+        elif item.get('packaging_link_revision'):
+            raise ValueError('Packaging link removed. Reload the shipment before planning.')
         if record and record.get('shipping_behavior') == 'digital':
             raise ValueError(f"{record['sku']}: digital products do not need packing. Reload the shipment.")
         if record and (record.get('needs_review') or record.get('verification_status')==package_health.REVIEW):

@@ -122,6 +122,14 @@ def component_warnings(bundle):
     for component in bundle['components']:
         sku = component['sku']
         rows = lookup_sku(sku)
+        if any(r.get('packaging_source_sku') for r in rows):
+            from .shipping_aliases import resolve
+            from .shipping_registry import _load_payload
+            try:
+                rows, link = resolve(sku, _load_payload()['records'], load_bundles())
+            except ValueError as exc:
+                warnings.append(f'{sku}: {exc}')
+                continue
         if not rows:
             warnings.append(f'{sku}: not in Package Database; add its package data before planning.')
         for row in rows:
@@ -173,6 +181,9 @@ def save_bundle(payload, user):
             raise ValueError('Bundle SKU cannot be renamed. Remove the old mapping and create the corrected SKU.')
         current[key] = bundle
         _validate(list(current.values()))
+        from .shipping_aliases import validate
+        from .shipping_registry import _load_payload
+        validate(_load_payload()['records'], current)
         changes = _overrides()
         changes[key] = bundle
         _write(changes)

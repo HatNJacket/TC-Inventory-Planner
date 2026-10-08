@@ -10,7 +10,7 @@ from .shipping_registry import VERIFIED_STATUSES, PROVISIONAL_STATUS
 
 LOCK = RLock()
 REVIEW = 'Needs review'
-MEASURED_FIELDS = ('sku','part','dimensions_in','weight_kg','packages_per_unit','shipping_behavior')
+MEASURED_FIELDS = ('sku','part','dimensions_in','weight_kg','packages_per_unit','shipping_behavior','packaging_source_sku')
 
 
 def locked(fn):
@@ -38,24 +38,36 @@ def dimensions_valid(record):
 
 
 def categories(record):
+    if record.get('packaging_source_sku'):
+        return dict.fromkeys(('verified','unverified','missing_dimensions','missing_weights','needs_review','ready','digital'), False) | {'linked': True}
     if record.get('shipping_behavior') == 'digital':
-        return dict.fromkeys(('verified','unverified','missing_dimensions','missing_weights','needs_review','ready'), False) | {'digital': True}
+        return dict.fromkeys(('verified','unverified','missing_dimensions','missing_weights','needs_review','ready','linked'), False) | {'digital': True}
     valid=dimensions_valid(record)
     review=bool(record.get('needs_review')) or record.get('verification_status')==REVIEW
     verified=valid and not review and record.get('verification_status') in VERIFIED_STATUSES
     return {'verified':verified, 'unverified':valid and not verified and not review,
             'missing_dimensions':not valid, 'missing_weights':not positive(record.get('weight_kg')),
-            'needs_review':review, 'ready':verified and positive(record.get('weight_kg')), 'digital':False}
+            'needs_review':review, 'ready':verified and positive(record.get('weight_kg')), 'digital':False, 'linked':False}
 
 
 def health(records, bundles):
     from .shipping_bundles import sku_key
     components=[r for r in records if sku_key(r.get('sku')) not in bundles]
-    physical=[r for r in components if r.get('shipping_behavior') != 'digital']
+    physical=[r for r in components if r.get('shipping_behavior') != 'digital' and not r.get('packaging_source_sku')]
     counts={k:sum(categories(r)[k] for r in physical) for k in categories({})}
     by_sku={}
     counts['digital']=sum(categories(r)['digital'] for r in components)
+    counts['linked']=sum(categories(r)['linked'] for r in components)
     for r in components: by_sku.setdefault(sku_key(r.get('sku')),[]).append(r)
+    from .shipping_aliases import resolve
+    for sku in list(by_sku):
+        if not any(r.get('packaging_source_sku') for r in by_sku[sku]):
+            continue
+        try:
+            targets, link = resolve(sku, records, bundles)
+            by_sku[sku] = [] if link and link.get('needs_review') else targets
+        except ValueError:
+            by_sku[sku] = []
     ready_bundles=sum(all(by_sku.get(sku_key(c['sku'])) and all(categories(r)['ready'] or categories(r)['digital'] for r in by_sku[sku_key(c['sku'])])
                           for c in b['components']) for b in bundles.values())
     return {**counts,'total':len(physical),'registry_records':len(records),
@@ -65,7 +77,7 @@ def health(records, bundles):
 
 
 def suspicious(clean, existing):
-    if clean.get('shipping_behavior') == 'digital':
+    if clean.get('shipping_behavior') == 'digital' or clean.get('packaging_source_sku'):
         return []
     warnings=[]
     dims=clean.get('dimensions_in') or []
@@ -99,7 +111,7 @@ def audit(clean, existing, user, action, reason=''):
 def prepare_save(raw, clean, existing, user):
     if existing and raw.get('_revision') != revision(existing):
         raise ValueError('This package changed since you opened it. Reload and select the record again before saving.')
-    changed=existing is None or any(clean.get(k)!=existing.get(k) for k in MEASURED_FIELDS)
+    changed=existing is None or any((clean.get(k) or '')!=(existing.get(k) or '') if k=='packaging_source_sku' else clean.get(k)!=existing.get(k) for k in MEASURED_FIELDS)
     warnings=suspicious(clean,existing)
     clean['needs_review']=bool((existing or {}).get('needs_review')) or (existing or {}).get('verification_status')==REVIEW or bool(warnings)
     clean['review_reason']=(existing or {}).get('review_reason','')
@@ -107,5 +119,7 @@ def prepare_save(raw, clean, existing, user):
     clean['verification_status']=REVIEW if clean['needs_review'] else PROVISIONAL_STATUS if changed else existing.get('verification_status',PROVISIONAL_STATUS)
     clean['last_verified']=(existing or {}).get('last_verified','')
     clean['measured_by']=(existing or {}).get('measured_by','')
+    if clean.get('packaging_source_sku') and raw.get('packaging_confirmed') is True:
+        clean.update(needs_review=False, review_reason='', review_warnings=[], verification_status=PROVISIONAL_STATUS)
     return audit(clean,existing,user,'created' if existing is None else 'edited',
                  'Package data changed; verification reset.' if changed else 'Metadata edited; verification retained.')
