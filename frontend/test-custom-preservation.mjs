@@ -36,21 +36,21 @@ try{
  await page.waitForFunction(()=>document.body.textContent.includes('Planning…'));
  await page.getByRole('button',{name:'Open package database for A',exact:true}).click();
  await page.getByRole('heading',{name:'Edit package record',exact:true}).waitFor();
- await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
+ await page.getByRole('checkbox',{name:/I physically checked/}).check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
  await page.getByRole('button',{name:'Custom Shipment',exact:true}).click();await page.getByText('Verified — Warehouse',{exact:true}).first().waitFor();
  assert.equal(await page.getByLabel('Quantity for A').inputValue(),'3');assert.equal(await page.getByPlaceholder('Test shipment').inputValue(),'My custom test');
  assert.deepEqual(loads,[{items:[{sku:'A',quantity:3}],reference:'My custom test'},{items:[{sku:'A',quantity:3}],reference:'My custom test'}]);
  await delayedPlan();await page.waitForTimeout(150);assert.equal(await page.getByText('Final shipping summary',{exact:true}).count(),0);
  // Refresh failure preserves the loaded reference and draft, and cannot build a stale plan.
  fail=true;await page.getByRole('button',{name:'Package Database',exact:true}).click();
- await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
+ await page.getByRole('checkbox',{name:/I physically checked/}).check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
  await page.getByRole('button',{name:'Custom Shipment',exact:true}).click();await page.getByText(/Could not refresh custom shipment/).waitFor();
  await page.getByText('My custom test',{exact:true}).waitFor();assert.equal(await page.getByLabel('Quantity for A').inputValue(),'3');
  assert.equal(await page.getByRole('button',{name:'Build Packing Plan',exact:true}).isDisabled(),true);
  fail=false;await page.getByRole('button',{name:'Load Custom Shipment',exact:true}).click();await page.getByText('Verified — Warehouse',{exact:true}).first().waitFor();
  // An edited, not-yet-loaded draft must survive package changes without reviving the old shipment.
  await page.getByLabel('Quantity for A').fill('4');
- await page.getByRole('button',{name:'Package Database',exact:true}).click();await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
+ await page.getByRole('button',{name:'Package Database',exact:true}).click();await page.getByRole('checkbox',{name:/I physically checked/}).check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
  await page.getByRole('button',{name:'Custom Shipment',exact:true}).click();await page.getByText('Plan a custom shipment',{exact:true}).waitFor();
  assert.equal(await page.getByLabel('Quantity for A').inputValue(),'4');assert.equal(loads.length,4);
  assert.deepEqual(errors,[]);console.log('PASS: custom SKUs, quantities, reference, and loaded shipment survive verification; stale plans ignored; refresh failure/retry and unloaded drafts preserved.');

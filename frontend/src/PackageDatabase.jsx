@@ -118,6 +118,7 @@ export default function PackageDatabase({onToast,bundleVersion,onChanged,focusRe
           {edit.shipping_behavior==='accessory_carrier'&&<label>Carrier notes<textarea style={input} value={edit.carrier_notes||''} onChange={e=>field('carrier_notes',e.target.value)}/></label>}
           </>}
           <label>Notes<textarea style={input} value={edit.notes||''} onChange={e=>field('notes',e.target.value)}/></label>
+          <label><input type="checkbox" checked={!!edit.lettermail_unsuitable} onChange={e=>field('lettermail_unsuitable',e.target.checked)}/> Not suitable for Lettermail (fragile or otherwise unsuitable)</label>
         </fieldset>
         <p style={{fontSize:12}}>Carrier-ready boxes can ship on their own or be combined inside a warehouse carton to reduce parcel count. Must ship alone always stays separate. Accessory carriers keep their assigned contents together when consolidated.</p>
         {!linkMode&&!digital&&!!warnings.length&&<div role="alert" style={{background:'#fff7dd',padding:12,marginTop:12}}>{warnings.map(w=><p key={w}>{w}</p>)}Saving these values will mark the record Needs review.</div>}

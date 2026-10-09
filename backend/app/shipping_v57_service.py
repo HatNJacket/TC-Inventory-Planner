@@ -166,6 +166,7 @@ def normalize_registry_record(raw: dict[str, Any], *, existing_id: str | None = 
         "source_import": _clean_text(raw.get("source_import"), "Source import", max_length=250),
         "shipping_behavior": behavior,
         "stamp_accessories_inside": behavior == "accessory_carrier",
+        "lettermail_unsuitable": raw.get('lettermail_unsuitable') is True,
         "carrier_notes": _clean_text(raw.get("carrier_notes"), "Carrier notes", max_length=1200),
     }
 

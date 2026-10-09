@@ -35,7 +35,7 @@ def classify_delivery(order, fulfillment_orders=None):
                 methods.append('PICKUP_POINT')
             elif code in {'pickup', 'pick_up', 'local_pickup'} or re.search(r'^(?:local |in[- ]store |store |customer )?pick[ -]?up(?:$| in\b| at\b| -)', label):
                 methods.append('PICK_UP')
-            elif re.search(r'\b(shipping|canada post|ups|fedex|purolator|dhl|canpar|usps)\b', label):
+            elif re.search(r'\b(shipping|canada post|ups|fedex|purolator|dhl|canpar|usps|letter[ -]?mail)\b', label) or re.search(r'\bletter[ -]?mail\b',code):
                 methods.append('SHIPPING')
             else:
                 methods.append('UNKNOWN')

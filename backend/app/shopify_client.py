@@ -1890,6 +1890,7 @@ class ShopifyClient:
                                     currentQuantity
                                     unfulfilledQuantity
                                     requiresShipping
+                                    originalUnitPriceSet { shopMoney { amount currencyCode } }
                                     vendor
                                     variant { id title }
                                     product { id vendor }
@@ -1934,6 +1935,11 @@ class ShopifyClient:
         except Exception:
             logger.warning('Shipping Planner delivery-method lookup unavailable; using explicit order delivery labels where possible.')
         delivery = classify_delivery(order, fulfillment_orders)
+        from .shipping_lettermail import assess
+        lettermail = assess(order, delivery)
+        if lettermail and lettermail['selected']:
+            delivery = {**delivery, 'type':'lettermail', 'packing_allowed':False,
+                        'message':'Lettermail selected — use the pouch checklist, not carton optimization. No tracking.'}
 
         line_items = []
         for edge in ((order.get("lineItems") or {}).get("edges") or []):
@@ -1985,6 +1991,7 @@ class ShopifyClient:
                 "phone": address.get("phone") or "",
             },
             "shipping_method": shipping_lines[0].get("title") if shipping_lines else "",
+            "lettermail": lettermail,
             "delivery": delivery,
             "shipping_lines": shipping_lines,
             "line_items": line_items,

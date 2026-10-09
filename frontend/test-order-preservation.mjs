@@ -33,7 +33,7 @@ try {
  await page.getByRole('heading',{name:'Edit package record',exact:true}).waitFor();
  assert.equal(await page.getByLabel('Search package database').inputValue(),'TEST');
  assert.equal(await page.getByLabel('Package sku',{exact:true}).inputValue(),'TEST');
- await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
+ await page.getByRole('checkbox',{name:/I physically checked/}).check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
  await page.getByText('Physical verification recorded',{exact:true}).count();
  await page.getByRole('button',{name:'Pack an Order',exact:true}).click();
  await page.getByText('Verified — Warehouse',{exact:true}).first().waitFor();
@@ -43,7 +43,7 @@ try {
  assert.equal(await page.getByText('STALE PLAN',{exact:true}).count(),0);
  fail=true;
  await page.getByRole('button',{name:'Package Database',exact:true}).click();
- await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
+ await page.getByRole('checkbox',{name:/I physically checked/}).check();await page.getByRole('button',{name:'Mark physically verified',exact:true}).click();
  await page.getByRole('button',{name:'Pack an Order',exact:true}).click();
  await page.getByText(/Could not refresh package details/).waitFor();
  assert.equal(await input.inputValue(),'123');await page.getByText('#123',{exact:true}).waitFor();

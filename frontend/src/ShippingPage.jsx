@@ -10,6 +10,7 @@ import BundleBreakdown from './BundleBreakdown';
 import BundleManager from './BundleManager';
 import PackageDatabaseView from './PackageDatabase';
 import FlagPackage from './FlagPackage';
+import LettermailOrder from './LettermailOrder';
 
 const GREEN = '#2aad51';
 const VERIFIED = new Set(['Verified — Warehouse', 'Confirmed — Vendor/Label']);
@@ -255,7 +256,9 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged, p
     {custom ? <CustomShipmentBuilder onShipment={loadCustomShipment} onChange={clearCustomShipment} busy={loading||planLoading}/> : <div style={{...card,padding:20,marginBottom:18}}><form onSubmit={loadOrder} style={{display:'flex',gap:10,alignItems:'end',flexWrap:'wrap'}}><div style={{flex:'1 1 320px'}}><label style={{display:'block',fontSize:12,fontWeight:800,marginBottom:6,color:'var(--text-light)'}}>Shopify order number</label><input value={orderNumber} onChange={e=>setOrderNumber(e.target.value)} placeholder="#51234 or 51234" style={inputStyle}/></div><button type="submit" disabled={loading||!orderNumber.trim()} style={{...primaryButton,minWidth:150,opacity: loading ? 0.7 : 1}}>{loading?(firstLookup.current?'Connecting to Shopify…':'Loading…'):'Load order'}</button></form>{error&&<div style={{marginTop:12,color:'#b91c1c',fontSize:13,fontWeight:700}}>{error}</div>}</div>}
     {custom&&error&&<p role="alert" style={{color:'#b91c1c'}}>{error}</p>}
     {!order&&<div style={{...card,padding:50,textAlign:'center',color:'var(--text-light)'}}><div style={{fontSize:44}}>📦</div><div style={{fontWeight:800,color:'var(--text)',marginTop:8}}>{custom?'Plan a custom shipment':'Pack a Shopify order'}</div><div style={{fontSize:13,marginTop:6}}>{custom?'Add SKUs and quantities above, then load the shipment to calculate its packing plan.':'Load the order once, then all packing-plan rebuilds happen locally against the loaded package state.'}</div></div>}
-    {order&&order.delivery?.packing_allowed===false&&<section role="status" style={{...card,padding:24,marginBottom:18,border:'1px solid #93c5fd',background:'#eff6ff'}}><h2 style={{marginTop:0}}>{order.name} · {order.delivery.type==='pickup'?'Pickup order':order.delivery.type==='not_required'?'No shipping needed':'Delivery review needed'}</h2><p>{order.delivery.message}</p>{order.shipping_method&&<p>Shopify delivery method: {order.shipping_method}</p>}</section>}
+    {order?.lettermail?.selected&&!loading&&!error&&<LettermailOrder order={order} onOpenPackage={onOpenPackage}/>}
+    {order?.lettermail&&!order.lettermail.selected&&<div role="alert" style={{...card,padding:18,marginBottom:18}}>{order.lettermail.warnings.map(w=><p key={w}>{w}</p>)}</div>}
+    {order&&order.delivery?.packing_allowed===false&&!order.lettermail?.selected&&<section role="status" style={{...card,padding:24,marginBottom:18,border:'1px solid #93c5fd',background:'#eff6ff'}}><h2 style={{marginTop:0}}>{order.name} · {order.delivery.type==='pickup'?'Pickup order':order.delivery.type==='not_required'?'No shipping needed':'Delivery review needed'}</h2><p>{order.delivery.message}</p>{order.shipping_method&&<p>Shopify delivery method: {order.shipping_method}</p>}</section>}
     {order&&order.delivery?.packing_allowed!==false&&<>
       {!rows.length&&!readiness.unresolved_count&&<p role="status" style={{...card,padding:18}}>No physical packages to ship. Digital / non-shipping items do not need dimensions, weight, or a packing plan.</p>}
       <BundleBreakdown bundles={order.bundle_expansions}/>
