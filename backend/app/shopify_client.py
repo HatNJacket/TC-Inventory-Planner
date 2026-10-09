@@ -1837,7 +1837,7 @@ class ShopifyClient:
 
 
     # ─── SHIPPING ORDER LOOKUP ─────────────────────────────────────
-    async def fetch_order_for_shipping(self, order_number: str) -> Optional[Dict]:
+    async def fetch_order_for_shipping(self, order_number: str, fulfillment_order_id: str | None = None) -> Optional[Dict]:
         """Fetch one Shopify order for warehouse packing.
 
         ``order_number`` may be entered as ``51234`` or ``#51234``. Only data
@@ -1924,8 +1924,15 @@ class ShopifyClient:
             delivery_data = await self._query('''
                 query shippingDelivery($id: ID!) {
                     order(id: $id) {
-                        fulfillmentOrders(first: 100) {
-                            edges { node { status deliveryMethod { methodType } } }
+                        fulfillmentOrders(first: 10) {
+                            edges { node {
+                                id status assignedLocation { name } fulfillmentHolds { reason }
+                                deliveryMethod { methodType }
+                                lineItems(first: 25) {
+                                    edges { node { remainingQuantity lineItem { id sku } } }
+                                    pageInfo { hasNextPage }
+                                }
+                            } }
                             pageInfo { hasNextPage }
                         }
                     }
@@ -1934,9 +1941,16 @@ class ShopifyClient:
             fulfillment_orders = (delivery_data.get('order') or {}).get('fulfillmentOrders')
         except Exception:
             logger.warning('Shipping Planner delivery-method lookup unavailable; using explicit order delivery labels where possible.')
-        delivery = classify_delivery(order, fulfillment_orders)
+        from .shipping_fulfillment import select_group
+        selection = select_group(order, fulfillment_orders, fulfillment_order_id)
+        selected_connection = {'edges':[{'node':selection['selected_node']}]} if selection['selected_node'] else fulfillment_orders
+        delivery = classify_delivery(order, selected_connection)
+        if selection['blocked'] and delivery['type'] not in ('pickup','not_required'):
+            delivery = {**delivery,'packing_allowed':False,'message':selection['message']}
         from .shipping_lettermail import assess
-        lettermail = assess(order, delivery)
+        lettermail = assess(order, delivery, selection['quantities'])
+        if lettermail and selection['blocked']:
+            lettermail = None
         if lettermail and lettermail['selected']:
             delivery = {**delivery, 'type':'lettermail', 'packing_allowed':False,
                         'message':'Lettermail selected — use the pouch checklist, not carton optimization. No tracking.'}
@@ -1944,11 +1958,6 @@ class ShopifyClient:
         line_items = []
         for edge in ((order.get("lineItems") or {}).get("edges") or []):
             li = edge.get("node") or {}
-            qty = li.get("unfulfilledQuantity")
-            if qty is None:
-                qty = li.get("currentQuantity")
-            if qty is None:
-                qty = li.get("quantity") or 0
             line_items.append({
                 "id": li.get("id"),
                 "sku": normalize_sku(li.get("sku") or ""),
@@ -1957,7 +1966,7 @@ class ShopifyClient:
                 "quantity": int(li.get("quantity") or 0),
                 "current_quantity": int(li.get("currentQuantity") or 0),
                 "unfulfilled_quantity": int(li.get("unfulfilledQuantity") or 0),
-                "pack_quantity": max(0, int(qty or 0)),
+                "pack_quantity": max(0, int(selection['quantities'].get(li.get('id'),0))),
                 "requires_shipping": li.get("requiresShipping", True),
                 "variant_id": (li.get("variant") or {}).get("id") or "",
                 "product_id": (li.get("product") or {}).get("id") or "",
@@ -1993,6 +2002,7 @@ class ShopifyClient:
             "shipping_method": shipping_lines[0].get("title") if shipping_lines else "",
             "lettermail": lettermail,
             "delivery": delivery,
+            "fulfillment_selection": {k:v for k,v in selection.items() if k not in ('quantities','selected_node')},
             "shipping_lines": shipping_lines,
             "line_items": line_items,
             "warnings": (["Order has more than 250 line items; Phase 1 only loaded the first 250."]

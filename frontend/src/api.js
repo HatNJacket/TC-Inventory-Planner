@@ -1320,8 +1320,8 @@ export async function activateProduct(productId, publish = true) {
 }
 
 // ─── Shipping / Packing ─────────────────────────────────────────
-export async function getShippingOrder(orderNumber) {
-  return apiFetch('/shipping/orders/' + encodeURIComponent(String(orderNumber).trim()));
+export async function getShippingOrder(orderNumber,fulfillmentOrderId='') {
+  return apiFetch('/shipping/orders/' + encodeURIComponent(String(orderNumber).trim())+(fulfillmentOrderId?'?fulfillment_order_id='+encodeURIComponent(fulfillmentOrderId):''));
 }
 
 export async function getShippingRegistryStatus() {

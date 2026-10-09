@@ -7,7 +7,7 @@ def is_lettermail(line):
     return any(re.search(r'\bletter[ -]?mail\b', str(line.get(k) or ''), re.I) for k in ('title','code'))
 
 
-def assess(order, delivery):
+def assess(order, delivery, quantities=None):
     lines=[e.get('node') or {} for e in (order.get('shippingLines') or {}).get('edges',[])]
     lines=[line for line in lines if not line.get('isRemoved')]
     if not any(is_lettermail(line) for line in lines):
@@ -28,7 +28,8 @@ def assess(order, delivery):
         item=edge.get('node') or {}
         if item.get('requiresShipping') is False:continue
         current=item.get('currentQuantity',item.get('quantity',0)) or 0
-        units+=max(0,item.get('unfulfilledQuantity',current) or 0)
+        packing_quantity=(quantities.get(item.get('id'),0) if quantities is not None else item.get('unfulfilledQuantity',current)) or 0
+        units+=max(0,packing_quantity)
         if current<=0:continue
         money=(item.get('originalUnitPriceSet') or {}).get('shopMoney') or {}
         try:
@@ -36,6 +37,7 @@ def assess(order, delivery):
             if money.get('currencyCode')!='CAD' or not amount.is_finite() or amount<0:raise ValueError()
             value+=amount*current
         except (InvalidOperation,ValueError):value_known=False
+        if packing_quantity<=0:continue
         records=lookup_sku(item.get('sku') or '')
         if not records:warnings.append(f"{item.get('sku') or 'Missing SKU'}: no package record; suitability needs a manual check.")
         for record in records:

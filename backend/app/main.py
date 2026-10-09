@@ -6426,11 +6426,12 @@ async def shipping_registry_lookup(
 @app.get("/api/shipping/orders/{order_number}")
 async def shipping_order_for_packing(
     order_number: str,
+    fulfillment_order_id: str | None = None,
     token: str = Depends(verify_token),
 ):
     """Load a Shopify order and resolve every shippable SKU to physical packages."""
     try:
-        order = await shopify_client.fetch_order_for_shipping(order_number)
+        order = await shopify_client.fetch_order_for_shipping(order_number, fulfillment_order_id=fulfillment_order_id)
         if not order:
             raise HTTPException(status_code=404, detail=f"Shopify order {order_number!r} was not found")
         return expand_shipping_order(order)
@@ -6553,11 +6554,12 @@ def shipping_carton_import_apply(payload: dict, user: str = Depends(current_ship
 @app.post("/api/shipping/orders/{order_number}/packing-plan")
 async def shipping_order_packing_plan(
     order_number: str,
+    fulfillment_order_id: str | None = None,
     token: str = Depends(verify_token),
 ):
     """Load the live Shopify order, resolve packages, and create a stock-aware 3D packing plan."""
     try:
-        order = await shopify_client.fetch_order_for_shipping(order_number)
+        order = await shopify_client.fetch_order_for_shipping(order_number, fulfillment_order_id=fulfillment_order_id)
         if not order:
             raise HTTPException(status_code=404, detail=f"Shopify order {order_number!r} was not found")
         expanded = expand_shipping_order(order)

@@ -55,7 +55,9 @@ class LettermailTests(unittest.TestCase):
 class IntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_order_lookup_blocks_optimizers_and_preserves_order_lines(self):
         client=ShopifyClient()
-        client._query=AsyncMock(side_effect=[{'orders':{'edges':[{'node':fixture()}]}},Exception('No scope')])
+        raw=fixture();raw['lineItems']['edges'][0]['node']['id']='TEST'
+        from test_shipping_fulfillment import group, connection
+        client._query=AsyncMock(side_effect=[{'orders':{'edges':[{'node':raw}]}},{'order':{'fulfillmentOrders':connection(group('F',[('TEST',1)]))}}])
         with patch('app.shipping_registry.lookup_sku',return_value=[{'sku':'TEST'}]):
             order=await client.fetch_order_for_shipping('1')
         self.assertEqual(order['delivery']['type'],'lettermail')

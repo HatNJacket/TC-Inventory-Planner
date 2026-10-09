@@ -161,6 +161,7 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged, p
   const destination=order?.shipping_address||{}; const readiness=order?.packing_readiness||{};
   const requestVersion=useRef(0),loadedReference=useRef(''),previousPackageVersion=useRef(packageVersion);
   const loadedCustom=useRef(null);
+  const selectedFulfillment=useRef('');
   useEffect(()=>{
     if(previousPackageVersion.current===packageVersion)return;
     previousPackageVersion.current=packageVersion;
@@ -186,12 +187,15 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged, p
     if(version===requestVersion.current)setCarrierData(Object.fromEntries(entries));
   }
 
-  async function loadOrder(e,{value=orderNumber.trim(),refresh=false}={}) {
+  async function loadOrder(e,{value=orderNumber.trim(),refresh=false,groupId}={}) {
     e?.preventDefault(); if(!value)return;
+    const requestedGroup=groupId??(loadedReference.current===value?selectedFulfillment.current:'');
+    selectedFulfillment.current=requestedGroup;
     const version=++requestVersion.current;loadedReference.current=value;
     setLoading(true);setError('');setPlan(null);setPlanLoading(false);setRows([]);setCarrierData({});setFitDraft({});setNotes({});setFinalWeights({});
     try {
-      const result=await api.getShippingOrder(value);if(version!==requestVersion.current)return;
+      const result=await api.getShippingOrder(value,requestedGroup);if(version!==requestVersion.current)return;
+      selectedFulfillment.current=result.fulfillment_selection?.selected_id||requestedGroup;
       setOrder(result);const grouped=groupPhysicalPackages(result.physical_packages);setRows(grouped);
       await refreshCarrierData(grouped,version);if(version!==requestVersion.current)return;
       onToast?.(refresh?'Order package details refreshed. Build a new packing plan.':`Loaded ${result.name||value} from Shopify`);
@@ -255,6 +259,16 @@ function PackingView({ onToast, currentUser, custom = false, onPackageChanged, p
   return <div>
     {custom ? <CustomShipmentBuilder onShipment={loadCustomShipment} onChange={clearCustomShipment} busy={loading||planLoading}/> : <div style={{...card,padding:20,marginBottom:18}}><form onSubmit={loadOrder} style={{display:'flex',gap:10,alignItems:'end',flexWrap:'wrap'}}><div style={{flex:'1 1 320px'}}><label style={{display:'block',fontSize:12,fontWeight:800,marginBottom:6,color:'var(--text-light)'}}>Shopify order number</label><input value={orderNumber} onChange={e=>setOrderNumber(e.target.value)} placeholder="#51234 or 51234" style={inputStyle}/></div><button type="submit" disabled={loading||!orderNumber.trim()} style={{...primaryButton,minWidth:150,opacity: loading ? 0.7 : 1}}>{loading?(firstLookup.current?'Connecting to Shopify…':'Loading…'):'Load order'}</button></form>{error&&<div style={{marginTop:12,color:'#b91c1c',fontSize:13,fontWeight:700}}>{error}</div>}</div>}
     {custom&&error&&<p role="alert" style={{color:'#b91c1c'}}>{error}</p>}
+    {!custom&&order?.fulfillment_selection&&<section aria-label="Fulfillment group" style={{...card,padding:18,marginBottom:18}}>
+      <h3 style={{marginTop:0}}>Fulfillment group to pack</h3>
+      <p>Select one Shopify group. Held, scheduled, closed, and cancelled groups are not packed. Selection does not change Shopify.</p>
+      <select aria-label="Fulfillment group to pack" value={order.fulfillment_selection.selected_id||''} disabled={loading} onChange={e=>loadOrder(null,{value:loadedReference.current,groupId:e.target.value})} style={inputStyle}>
+        <option value="" disabled>Choose a fulfillment group</option>
+        {order.fulfillment_selection.groups.map(g=><option key={g.id} value={g.id} disabled={!g.eligible}>{g.id?.split('/').pop()} · {g.location} · {g.status} · {g.items.map(i=>`${i.sku} × ${i.quantity}`).join(', ')}</option>)}
+      </select>
+      {order.fulfillment_selection.message&&<p role="status">{order.fulfillment_selection.message}</p>}
+      {!!order.fulfillment_selection.selected_id&&<p>Only the selected group's remaining quantities are included below. Other groups stay excluded.</p>}
+    </section>}
     {!order&&<div style={{...card,padding:50,textAlign:'center',color:'var(--text-light)'}}><div style={{fontSize:44}}>📦</div><div style={{fontWeight:800,color:'var(--text)',marginTop:8}}>{custom?'Plan a custom shipment':'Pack a Shopify order'}</div><div style={{fontSize:13,marginTop:6}}>{custom?'Add SKUs and quantities above, then load the shipment to calculate its packing plan.':'Load the order once, then all packing-plan rebuilds happen locally against the loaded package state.'}</div></div>}
     {order?.lettermail?.selected&&!loading&&!error&&<LettermailOrder order={order} onOpenPackage={onOpenPackage}/>}
     {order?.lettermail&&!order.lettermail.selected&&<div role="alert" style={{...card,padding:18,marginBottom:18}}>{order.lettermail.warnings.map(w=><p key={w}>{w}</p>)}</div>}
